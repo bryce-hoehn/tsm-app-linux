@@ -10,15 +10,15 @@ TradeSkillMaster Desktop App Linux port. Authenticates with the TSM API, downloa
 
 ### Main window
 
-| | |
-|---|---|
+|                  |                  |
+| ---------------- | ---------------- |
 | ![](media/1.png) | ![](media/2.png) |
 | ![](media/3.png) | ![](media/4.png) |
 
 ### Settings
 
-| | | |
-|---|---|---|
+|                  |                  |                  |
+| ---------------- | ---------------- | ---------------- |
 | ![](media/5.png) | ![](media/6.png) | ![](media/7.png) |
 
 ## Features
@@ -76,7 +76,8 @@ sudo dnf install tsm-app-*.noarch.rpm
 
 ### Nix / NixOS
 
-Add the repo as an input to your system flake and expose it through an overlay:
+Add the repo as an input to your system flake and reference the flake output
+directly:
 
 ```nix
 # flake.nix
@@ -86,39 +87,23 @@ Add the repo as an input to your system flake and expose it through an overlay:
     tsm.url = "github:exceptionptr/tsm-app-linux";
   };
 
-  outputs =
-    {
-      self,
-      nixpkgs,
-      tsm,
-      ...
-    }:
-    let
-      system = "x86_64-linux";
-    in
-    {
-      nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
-        inherit system;
-        pkgs = import nixpkgs {
-          inherit system;
-          overlays = [
-            (_final: _prev: {
-              tradeskillmaster = tsm.packages.${system}.default;
-            })
-          ];
-        };
+  outputs = { self, nixpkgs, tsm, ...}: {
+    nixosConfigurations = {
+      myhost = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        specialArgs = { inherit inputs; };
         modules = [ ./configuration.nix ];
       };
     };
+  };
 }
-
 ```
 
 ```nix
 # configuration.nix
-{ config, pkgs, ... }:
+{ pkgs, inputs, ... }:
 {
-  environment.systemPackages = [ pkgs.tradeskillmaster ];
+  environment.systemPackages = [ inputs.packages.${pkgs.system}.default ];
 }
 ```
 
@@ -150,13 +135,13 @@ tsm-app
 
 ## File Locations
 
-| Purpose       | Path                                          |
-| ------------- | --------------------------------------------- |
-| Config        | `~/.config/tsm-app/config.toml`               |
-| Database      | `~/.local/share/tsm-app/data.db`              |
-| Log file      | `~/.local/share/tsm-app/logs/tsm-app.log`     |
-| Backups       | `~/.local/share/tsm-app/backups/`             |
-| Item cache    | `~/.local/share/tsm-app/item_cache.json`      |
+| Purpose    | Path                                      |
+| ---------- | ----------------------------------------- |
+| Config     | `~/.config/tsm-app/config.toml`           |
+| Database   | `~/.local/share/tsm-app/data.db`          |
+| Log file   | `~/.local/share/tsm-app/logs/tsm-app.log` |
+| Backups    | `~/.local/share/tsm-app/backups/`         |
+| Item cache | `~/.local/share/tsm-app/item_cache.json`  |
 
 Logs rotate automatically; the last 5 files are kept. To reset the app to a clean
 state, remove `~/.config/tsm-app/` and `~/.local/share/tsm-app/`.
@@ -165,19 +150,19 @@ state, remove `~/.config/tsm-app/` and `~/.local/share/tsm-app/`.
 
 The app scans the following paths automatically on startup:
 
-| Source                  | Path                                                                                          |
-| ----------------------- | --------------------------------------------------------------------------------------------- |
-| Wine (default prefix)   | `~/.wine/drive_c/Program Files (x86)/World of Warcraft`                                      |
-| Wine (default prefix)   | `~/.wine/drive_c/Program Files/World of Warcraft`                                             |
-| Lutris (common)         | `~/Games/world-of-warcraft`                                                                   |
-| Lutris (common)         | `~/Games/World of Warcraft`                                                                   |
-| Lutris (config)         | Wine prefix read from `~/.local/share/lutris/games/*.yml`, both Program Files variants        |
-| Faugus Launcher (config)| Wine prefix read from `~/.config/faugus-launcher/games.json`, both Program Files variants    |
-| Faugus Launcher (common)| All subdirectories of `~/Faugus/`, both Program Files variants                               |
-| Steam                   | `~/.local/share/Steam/steamapps/common/World of Warcraft`                                    |
-| Snap Wine               | `~/snap/wine-platform-5-stable/common/.wine/drive_c/Program Files (x86)/World of Warcraft`   |
-| Mount (games partition) | `/mnt/games/World of Warcraft`                                                                |
-| System opt              | `/opt/games/World of Warcraft`                                                                |
+| Source                   | Path                                                                                       |
+| ------------------------ | ------------------------------------------------------------------------------------------ |
+| Wine (default prefix)    | `~/.wine/drive_c/Program Files (x86)/World of Warcraft`                                    |
+| Wine (default prefix)    | `~/.wine/drive_c/Program Files/World of Warcraft`                                          |
+| Lutris (common)          | `~/Games/world-of-warcraft`                                                                |
+| Lutris (common)          | `~/Games/World of Warcraft`                                                                |
+| Lutris (config)          | Wine prefix read from `~/.local/share/lutris/games/*.yml`, both Program Files variants     |
+| Faugus Launcher (config) | Wine prefix read from `~/.config/faugus-launcher/games.json`, both Program Files variants  |
+| Faugus Launcher (common) | All subdirectories of `~/Faugus/`, both Program Files variants                             |
+| Steam                    | `~/.local/share/Steam/steamapps/common/World of Warcraft`                                  |
+| Snap Wine                | `~/snap/wine-platform-5-stable/common/.wine/drive_c/Program Files (x86)/World of Warcraft` |
+| Mount (games partition)  | `/mnt/games/World of Warcraft`                                                             |
+| System opt               | `/opt/games/World of Warcraft`                                                             |
 
 If your WoW installation isn't detected automatically, add the path manually via **Settings -> WoW Installations**.
 
