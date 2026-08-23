@@ -123,3 +123,8 @@ logs/
 *.key
 *.p12
 secrets.json
+
+# Nix build outputs
+result
+result-*
+.direnv/

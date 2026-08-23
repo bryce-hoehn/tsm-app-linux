@@ -74,6 +74,54 @@ Download the `.rpm` from the [latest release](https://github.com/exceptionptr/ts
 sudo dnf install tsm-app-*.noarch.rpm
 ```
 
+### Nix / NixOS
+
+Add the repo as an input to your system flake and expose it through an overlay:
+
+```nix
+# flake.nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    tsm.url = "github:exceptionptr/tsm-app-linux";
+  };
+
+  outputs =
+    {
+      self,
+      nixpkgs,
+      tsm,
+      ...
+    }:
+    let
+      system = "x86_64-linux";
+    in
+    {
+      nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+        inherit system;
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [
+            (_final: _prev: {
+              tradeskillmaster = tsm.packages.${system}.default;
+            })
+          ];
+        };
+        modules = [ ./configuration.nix ];
+      };
+    };
+}
+
+```
+
+```nix
+# configuration.nix
+{ config, pkgs, ... }:
+{
+  environment.systemPackages = [ pkgs.tradeskillmaster ];
+}
+```
+
 ### Any distro / From source
 
 Recommended for Ubuntu 24.04 and distros without a compatible PySide6 package:
