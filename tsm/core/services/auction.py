@@ -97,15 +97,19 @@ class AuctionDataService:
             if not app_data:
                 continue  # AppHelper not installed for this game version, skip
 
-            # Classic Era, Anniversary, SoD: the API returns all 250+ available
-            # realms. Only sync game versions where the user explicitly added a
-            # realm via the Add Realm dropdown.
+            # /v2/status returns the account's own registered realms for retail
+            # and bcc, but the full catalogue (240+ realms across every region)
+            # for Classic Era and Anniversary. Only those two need narrowing to
+            # what the user added via the Add Realm dropdown.
+            #
+            # bcc was filtered here too, which skipped every Progression realm:
+            # status keys them "BCC-EU" while the dropdown stored the bare "EU"
+            # from realms2/list, so nothing ever matched. See issue #19.
             realm_filter: set[tuple[str, str]] | None = None
-            if gv_dir in ("_classic_era_", "_anniversary_", "_classic_"):
+            if gv_dir in ("_classic_era_", "_anniversary_"):
                 _GV_TO_API_KEY = {
                     "_anniversary_": "anniversary",
                     "_classic_era_": "classic",
-                    "_classic_": "bcc",
                 }
                 api_gv_key = _GV_TO_API_KEY[gv_dir]
                 realm_filter = (
@@ -116,11 +120,13 @@ class AuctionDataService:
                     continue
 
             # Process realms, dynamic key access requires cast (key is a runtime variable)
+            skipped: list[str] = []
             for realm in cast(list[RealmEntry], result.get(realms_key, [])):
                 name = realm.get("name", "")
                 region = realm.get("region", "")
 
                 if realm_filter is not None and (region, name) not in realm_filter:
+                    skipped.append(f"{region}-{name}" if region else name)
                     continue
 
                 strings = realm.get("appDataStrings", {})
@@ -150,6 +156,15 @@ class AuctionDataService:
                     # value so the column matches what is stored in AppData.lua.
                     if _REALM_LAST_UPDATED_TAG in pending:
                         rs.last_updated = pending[_REALM_LAST_UPDATED_TAG]["lastModified"]
+
+            if skipped:
+                logger.info(
+                    "%s: %d realm(s) not in the added-realm list, skipped: %s%s",
+                    gv_dir,
+                    len(skipped),
+                    ", ".join(skipped[:5]),
+                    ", ..." if len(skipped) > 5 else "",
+                )
 
             # Process regions, dynamic key access requires cast (key is a runtime variable)
             region_filter = {r[0] for r in realm_filter} if realm_filter is not None else None
@@ -255,7 +270,7 @@ class AuctionDataService:
         if self._client is None:
             return
         await self._client.realms.remove(game_version, region, name)
-        if game_version in ("anniversary", "classic", "bcc") and self._cache:
+        if game_version in ("anniversary", "classic") and self._cache:
             await self._cache.remove_user_realm(game_version, region, name)
 
     async def add_realm(
@@ -264,7 +279,9 @@ class AuctionDataService:
         if self._client is None:
             return
         await self._client.realms.add(game_version, realm_id)
-        if game_version in ("anniversary", "classic", "bcc") and self._cache and region and name:
+        # bcc is not stored: /v2/status already scopes Progression realms to the
+        # account, so they are never filtered against this table. See issue #19.
+        if game_version in ("anniversary", "classic") and self._cache and region and name:
             await self._cache.add_user_realm(game_version, region, name)
 
     async def get_snapshot(self) -> tuple[list[RealmStatus], int]:

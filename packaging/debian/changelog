@@ -1,3 +1,22 @@
+tsm-app (1.1.13-1) stable; urgency=medium
+
+  * Fix: Progression (bcc) realms never synced. /v2/status returns the account's
+    own realms for retail and bcc but the full catalogue for Classic Era and
+    Anniversary; the added-realm filter that narrows those catalogues was also
+    applied to bcc, matching status regions ("BCC-EU") against rows stored from
+    realms2/list ("EU"). Nothing matched, so every Progression realm was skipped
+    with no error and no log line. Progression is no longer filtered. (#19)
+  * Fix: schema version never advanced past the first migration; version is the
+    PRIMARY KEY so INSERT OR REPLACE appended a row instead of replacing it and
+    the version was read back as the lowest value. Read with MAX() and collapse
+    the table to one row, repairing databases that accumulated rows.
+  * Fix: realms dropped by the added-realm filter are now logged; the silent
+    skip is what hid the Progression outage.
+  * Change: bcc realms are no longer recorded in user_added_realms; a schema v4
+    migration deletes leftover bcc rows and keeps classic and anniversary ones.
+
+ -- tsm-app <noreply@tsm-app>  Thu, 27 Aug 2026 00:00:00 +0000
+
 tsm-app (1.1.12-1) stable; urgency=medium
 
   * Fix: addon download failing with "Invalid request." and never recovering.

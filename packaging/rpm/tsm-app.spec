@@ -1,5 +1,5 @@
 Name:           tsm-app
-Version:        1.1.12
+Version:        1.1.13
 Release:        1%{?dist}
 Summary:        TradeSkillMaster Desktop App for Linux
 
@@ -72,6 +72,19 @@ ep.write_text(''.join(lines))
 /usr/lib/tsm-app/
 
 %changelog
+* Thu Aug 27 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.13-1
+- Fix: Progression (bcc) realms never synced; /v2/status is already account-scoped
+  for retail and bcc, so the added-realm filter that narrows the Classic Era and
+  Anniversary catalogues must not run for bcc. It compared status regions
+  ("BCC-EU") against rows stored from realms2/list ("EU"), matched nothing and
+  skipped every Progression realm silently (#19)
+- Fix: schema version never advanced past the first migration; version is the
+  PRIMARY KEY so INSERT OR REPLACE appended a row. Read with MAX() and collapse
+  the table to a single row
+- Fix: realms dropped by the added-realm filter are now logged
+- Change: bcc rows are no longer written to user_added_realms; schema v4 migration
+  deletes leftover bcc rows and keeps classic and anniversary ones
+
 * Thu Aug 27 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.12-1
 - Fix: addon download failing with "Invalid request." and never recovering; the
   server now rejects a session ~10 min after login while auth refreshed every

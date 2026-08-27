@@ -220,7 +220,28 @@ below for which key corresponds to which WoW version.
 `version_str` values carry a leading `v` (e.g. `v4.14.76`). `appVersion` is
 documented here for completeness but is **not** present in the live response, so
 clients fall back to their own build number. `realms-BCC` / `regions-BCC` are
-returned alongside `realms-Progression` / `regions-Progression`.
+returned alongside `realms-Progression` / `regions-Progression` and carry the
+same payload.
+
+**Account-scoped keys vs catalogue keys.** This is the distinction that decides
+whether a client has to filter the list itself:
+
+| Key | Scope | Rows (measured 2026-08-27) |
+| --- | --- | --- |
+| `realms` / `regions` | the account's registered realms | 1 |
+| `realms-Progression` / `regions-Progression` | the account's registered realms | 3 |
+| `extraClassicRealms` / `extraClassicRegions` | full catalogue | 240 / 12 |
+| `extraAnniversaryRealms` / `extraAnniversaryRegions` | full catalogue | 10 / 4 |
+
+Retail and Progression already come back narrowed to the account, so a client
+must not filter them further. The `extra*` keys return every realm in every
+region and do need narrowing to whatever the user chose to add.
+
+Region strings within one catalogue key are not interchangeable prefixes of a
+common region: `extraClassicRealms` carries `Classic-EU`, `HC-EU` and `SoD-EU`
+side by side, and `extraAnniversaryRealms` uses `Fresh-EU` / `Fresh-US` rather
+than an `Anniversary-` prefix. Matching on the trailing two-letter code merges
+game modes that are genuinely separate.
 
 **RealmEntry** (realm or region object):
 
@@ -286,18 +307,30 @@ suffix, so all four packages extract to e.g. `TradeSkillMaster_AppHelper/`.
 
 ### `GET /v2/realms2/list`
 
-List all realms registered to the authenticated user's account.
+List the **full catalogue** of realms the API knows about, not the account's own
+realms. Measured 2026-08-27: 558 retail realms across EU/KR/TW/US and 226 bcc
+realms. This is the source for the Add Realm dropdown.
 
 Response:
 
 ```json
 {
+  "success": true,
   "retail": [ ... ],
   "bcc": [ ... ]
 }
 ```
 
-Both arrays contain `RealmEntry[]`.
+Both arrays contain `RealmEntry[]`, but with a **bare** region and an integer id:
+
+```json
+{ "id": 1, "masterId": 1, "name": "Anathema-Alliance", "region": "US" }
+```
+
+Note the region differs from what `/v2/status` reports for the same realm. A bcc
+realm listed here as `region: "EU"` appears in `realms-Progression` as
+`region: "BCC-EU"` with a string id such as `"106-BCC"`. Do not use a region
+string from this endpoint as a key against status data.
 
 ---
 

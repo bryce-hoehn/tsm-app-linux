@@ -11,8 +11,11 @@
 ### AuctionDataService (`core/services/auction.py`)
 
 - `refresh_all_realms()` → `StatusAPI.get()` → diff → download blobs → write Lua → returns `AuctionData`
-  - Classic Era / Anniversary realms are filtered to those with active characters (reads
-    `TradeSkillMaster.lua` + `TradeSkillMaster_AppHelper.lua` via `get_active_factionrealms()`)
+  - Classic Era / Anniversary realms are narrowed to the ones the user added via the
+    Add Realm dropdown (`user_added_realms`), because `/v2/status` returns the full
+    catalogue for those two keys. Retail and Progression (bcc) are already scoped to
+    the account by the API and must not be filtered: doing so skipped every
+    Progression realm (issue #19)
   - Returns `AuctionData(addon_versions=...)` with `last_sync=0` when no WoW dirs found yet
     (prevents false "AppHelper not found" warning during startup detection)
 - `get_snapshot()` → `AuctionCache.load_statuses()` → `(list[RealmStatus], int)`

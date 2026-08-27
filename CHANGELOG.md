@@ -4,6 +4,45 @@ All notable changes to tsm-app-linux are documented here.
 
 ---
 
+## [1.1.13] - 2026-08-27
+
+### Fixed
+
+- **Progression (bcc) realms never synced.** The app authenticated, polled the
+  status endpoint and rewrote `AppData.lua`, but skipped every Progression realm
+  before checking whether new data was available. No error and no log line, so
+  the UI showed "Up to date" while the data aged; one reported realm was 207 days
+  stale.
+
+  `/v2/status` returns the account's own registered realms under `realms`
+  (retail) and `realms-Progression` (bcc), but the **full catalogue** under
+  `extraClassicRealms` and `extraAnniversaryRealms`. The added-realm filter
+  exists to narrow those catalogues and was being applied to bcc as well, where
+  it matched a list keyed `BCC-EU` by the status endpoint against rows stored as
+  the bare `EU` taken from `realms2/list`. Nothing ever matched, so the whole
+  game version was dropped. Progression is no longer filtered, which fixes the
+  realm loop, the region loop and the stale removal key in one change. Thanks to
+  SimonMengele for the diagnosis and the reproduction. (#19)
+- **Schema version never advanced past the first migration.** `version` is the
+  `PRIMARY KEY` of `schema_version`, so `INSERT OR REPLACE` appended a second row
+  rather than replacing the old one, and the subsequent `SELECT` read the lowest
+  value back. Every migration guarded by a version above that value would have
+  re-run on each startup. The version is now read with `MAX()` and the table is
+  collapsed to a single row, which also repairs databases that already
+  accumulated rows.
+- **Realms dropped by the added-realm filter are now logged.** The silent
+  `continue` is what let the Progression outage go unnoticed for months. Each
+  sync now logs how many realms were filtered out and names the first few.
+
+### Changed
+
+- Progression (bcc) realms are no longer recorded in `user_added_realms`, since
+  the table is only consulted for the two catalogue game versions. A schema v4
+  migration deletes leftover `bcc` rows; `classic` and `anniversary` rows are
+  kept.
+
+---
+
 ## [1.1.12] - 2026-08-27
 
 ### Fixed
