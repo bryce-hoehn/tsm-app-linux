@@ -11,8 +11,11 @@
 ### AuctionDataService (`core/services/auction.py`)
 
 - `refresh_all_realms()` → `StatusAPI.get()` → diff → download blobs → write Lua → returns `AuctionData`
-  - Classic Era / Anniversary realms are filtered to those with active characters (reads
-    `TradeSkillMaster.lua` + `TradeSkillMaster_AppHelper.lua` via `get_active_factionrealms()`)
+  - Classic Era / Anniversary realms are narrowed to the ones the user added via the
+    Add Realm dropdown (`user_added_realms`), because `/v2/status` returns the full
+    catalogue for those two keys. Retail and Progression (bcc) are already scoped to
+    the account by the API and must not be filtered: doing so skipped every
+    Progression realm (issue #19)
   - Returns `AuctionData(addon_versions=...)` with `last_sync=0` when no WoW dirs found yet
     (prevents false "AppHelper not found" warning during startup detection)
 - `get_snapshot()` → `AuctionCache.load_statuses()` → `(list[RealmStatus], int)`
@@ -23,8 +26,8 @@
 
 ### UpdateService (`core/services/updater.py`, 216 lines)
 
-- `check_and_update(addon_versions: list[AddonVersionInfo])` → compares with installed TOC → downloads & installs ZIPs
-- `install_or_update_addon(name, version)` → single addon download
+- `check_and_update(addon_versions: list[AddonVersionInfo])` → compares with installed TOC → downloads & installs ZIPs, one package per game version (`<base><suffix>`)
+- `install_or_update_addon(name, version)` → single addon download; `name` keeps its game-version suffix
 
 ### BackupService (`core/services/backup.py`, 287 lines)
 
@@ -63,7 +66,7 @@ JobScheduler.start() → asyncio.create_task(_scheduler_task())
   Schedules:
     job_auction_refresh  every 5 min  (after 5 min delay)
     job_backup           every N min  (user-configured)
-    job_auth_refresh     every 25 min
+    job_auth_refresh     every 5 min (session lifetime is ~10 min)
 ```
 
 ## API Client (`api/client.py`, 326 lines)
@@ -72,7 +75,7 @@ JobScheduler.start() → asyncio.create_task(_scheduler_task())
 TSMApiClient
   .auth    AuthAPI    → get_oidc_token(), authenticate(), login()
   .status  StatusAPI  → get(channel, tsm_version) → StatusResponse
-  .addon   AddonAPI   → download(name) → bytes
+  .addon   AddonAPI   → download(name, channel) → bytes   # no tsm_version
   .realms  RealmsAPI  → list(), add(gv, realm_id), remove(gv, region, realm)
 
 api_request(*parts, data, channel, tsm_version)

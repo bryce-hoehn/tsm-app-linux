@@ -1,3 +1,95 @@
+tsm-app (1.1.15-1) stable; urgency=medium
+
+  * Add: the Accounting tab is now a dashboard. Player gold over time from the
+    addon's per-character goldLog, with a hover crosshair and 1D/1W/1M/3M/6M/
+    1Y/2Y/All ranges; headline figures (high, low, daily sales and purchases,
+    top sale and purchase); Sales, Expenses and Profit panels with totals,
+    per-day averages and leading items; and every item sold or bought with its
+    icon framed in its quality colour, its item id, and earned/spent/profit.
+  * Add: item icons are fetched from the Wowhead CDN and cached on disk beside
+    the existing item cache; a missing icon falls back to an empty frame.
+  * Change: a character selector joins account and realm and narrows both the
+    chart and every figure. Warbank and guild gold count only under
+    "All characters".
+  * Change: the From/To pickers, type checkboxes, totals bar and paginated
+    transaction preview are removed; the range buttons and character selector
+    replace them. Export to CSV is kept and follows the current selection.
+  * Change: money is shown as a gold/silver/copper split with each unit in its
+    own colour, matching the item tooltip.
+  * Change: non-item rows (Repair Bill, Postage, Money Transfer) get a stand-in
+    icon instead of an empty frame; unknown types get a generic one.
+  * Change: the window opens at 1280x860 with a 1000x720 minimum; the old
+    740x600 could not fit the dashboard.
+
+ -- tsm-app <noreply@tsm-app>  Thu, 27 Aug 2026 00:00:00 +0000
+
+tsm-app (1.1.14-1) stable; urgency=medium
+
+  * Fix: adding or removing a Classic Era or Anniversary realm did nothing, or
+    crashed a worker. realms2/add and realms2/remove only exist for Retail and
+    Progression; for the catalogue game versions user_added_realms is the only
+    filter. Both paths now skip the API call and use the local table.
+  * Fix: removing a Retail or Progression realm sent the prefixed region
+    ("BCC-EU"), which the endpoint rejects; it wants the bare code ("EU").
+  * Fix: a refused removal now shows "Failed to remove realm. Please try again
+    later." and restores the row instead of raising in a worker thread.
+  * Change: Realm Data is grouped by game version, one collapsible group each,
+    matching the Addon Versions tab. Within a group the region is a bold header
+    carrying its own AuctionDB status and timestamp, with its realms listed
+    beneath it. Groups keep their expand/collapse state across a sync.
+  * Change: realm names no longer repeat their region; a Progression realm read
+    "Progression-EU-Everlook-Horde" beside a "BCC-EU" region row. Realms now show
+    the bare name under the region header.
+  * Change: region rows no longer show a delete button, which only ever answered
+    "Regions cannot be removed."
+  * Change: the added-realm filter logs counts at INFO and realm names at DEBUG;
+    it was naming most of 240 realms on every five minute sync.
+  * Chore: collapsible group header and animation extracted to
+    tsm/ui/components/collapsible_group.py and shared by both grouped tabs;
+    realm ordering moved to tsm/ui/views/realm_grouping.py, kept free of Qt so it
+    is unit testable.
+
+ -- tsm-app <noreply@tsm-app>  Thu, 27 Aug 2026 00:00:00 +0000
+
+tsm-app (1.1.13-1) stable; urgency=medium
+
+  * Fix: Progression (bcc) realms never synced. /v2/status returns the account's
+    own realms for retail and bcc but the full catalogue for Classic Era and
+    Anniversary; the added-realm filter that narrows those catalogues was also
+    applied to bcc, matching status regions ("BCC-EU") against rows stored from
+    realms2/list ("EU"). Nothing matched, so every Progression realm was skipped
+    with no error and no log line. Progression is no longer filtered. (#19)
+  * Fix: schema version never advanced past the first migration; version is the
+    PRIMARY KEY so INSERT OR REPLACE appended a row instead of replacing it and
+    the version was read back as the lowest value. Read with MAX() and collapse
+    the table to one row, repairing databases that accumulated rows.
+  * Fix: realms dropped by the added-realm filter are now logged; the silent
+    skip is what hid the Progression outage.
+  * Change: bcc realms are no longer recorded in user_added_realms; a schema v4
+    migration deletes leftover bcc rows and keeps classic and anniversary ones.
+
+ -- tsm-app <noreply@tsm-app>  Thu, 27 Aug 2026 00:00:00 +0000
+
+tsm-app (1.1.12-1) stable; urgency=medium
+
+  * Fix: addon download failing with "Invalid request." and never recovering.
+    The TSM server now rejects a session about 10 minutes after login, while
+    the auth refresh job ran every 25 minutes. The refresh interval is now
+    5 minutes, and a rejected request re-authenticates once and retries, so a
+    lapsed session recovers without restarting the app.
+  * Fix: API error envelopes {success: false, error: ...} were swallowed on
+    every endpoint except the addon download; a status call with a dead session
+    looked like a successful empty response and the sync silently stalled.
+    api_request() now raises TSMApiError.
+  * Fix: the addon download no longer sends a tsm_version query parameter; the
+    original client sends it on /v2/status only, carrying the installed
+    TradeSkillMaster addon version.
+  * Fix: each WoW client now receives its own package; the game-version suffix
+    was stripped before the request, so the retail build was installed into
+    _classic_era_, _classic_ and _anniversary_ too.
+
+ -- tsm-app <noreply@tsm-app>  Thu, 27 Aug 2026 00:00:00 +0000
+
 tsm-app (1.1.11-1) stable; urgency=medium
 
   * Fix: auto-detect WoW installed via Steam Proton (compatdata prefixes);
@@ -48,7 +140,7 @@ tsm-app (1.1.8-1) stable; urgency=medium
     realm IDs stored in local DB on Add Realm and included in the allow-set
     alongside active-character realms from SavedVariables.
 
- -- tsm-app <noreply@tsm-app>  Sat, 10 May 2026 00:00:00 +0000
+ -- tsm-app <noreply@tsm-app>  Sun, 10 May 2026 00:00:00 +0000
 
 tsm-app (1.1.7-1) stable; urgency=medium
 
@@ -59,7 +151,7 @@ tsm-app (1.1.7-1) stable; urgency=medium
     in the .deb package; app icon now appears in desktop launchers and task
     switchers, matching the .rpm behavior.
 
- -- tsm-app <noreply@tsm-app>  Sat, 03 May 2026 00:00:00 +0000
+ -- tsm-app <noreply@tsm-app>  Sun, 03 May 2026 00:00:00 +0000
 
 tsm-app (1.1.6-1) stable; urgency=medium
 
@@ -79,7 +171,7 @@ tsm-app (1.1.6-1) stable; urgency=medium
     path; the previous pip-generated wrapper used /usr/bin/python (absent on
     Ubuntu 26.04) and a Python-version-pinned dist-packages directory.
 
- -- tsm-app <noreply@tsm-app>  Tue, 22 Apr 2026 00:00:00 +0000
+ -- tsm-app <noreply@tsm-app>  Wed, 22 Apr 2026 00:00:00 +0000
 
 tsm-app (1.1.5-1) stable; urgency=medium
 
@@ -92,7 +184,7 @@ tsm-app (1.1.5-1) stable; urgency=medium
   * Add: Addon Versions tab group headers now show WoW installation status
     (installed/not installed) per game version as a grey label.
 
- -- tsm-app <noreply@tsm-app>  Fri, 04 Apr 2026 00:00:00 +0000
+ -- tsm-app <noreply@tsm-app>  Sat, 04 Apr 2026 00:00:00 +0000
 
 tsm-app (1.1.4-1) stable; urgency=medium
 

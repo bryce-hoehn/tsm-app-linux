@@ -1,23 +1,24 @@
-"""Accounting Export tab: reads WoW SavedVariables for accounting data."""
+"""Accounting tab: gold history, headline figures and per-item totals.
+
+Reads the TSM addon's SavedVariables directly. Aggregation lives in
+_accounting_stats and the rendering in accounting_dashboard; this module wires
+the two together, owns the account / realm / character selectors and exports the
+current selection to CSV.
+"""
 
 from __future__ import annotations
 
-import contextlib
 import csv
 import logging
-from datetime import datetime
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QDate, QEvent, QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QFontMetrics, QIcon, QMouseEvent
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
-    QDateEdit,
     QFileDialog,
-    QGridLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -26,19 +27,28 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tsm.core.services.icon_cache import IconCache
 from tsm.core.services.item_cache import ItemCache
 from tsm.storage.config_store import CONFIG_DIR
 from tsm.ui.components.wow_tooltip import WowItemTooltip
+from tsm.ui.views._accounting_stats import (
+    ALL_CHARACTERS,
+    GoldPoint,
+    build_stats,
+    characters_for_realm,
+    collect_gold_logs,
+    merge_gold_logs,
+)
 from tsm.ui.views._accounting_utils import (
     _TIME_COLS,
-    _base_item_str,
     _find_col,
-    _fmt_gold,
     _is_fetchable,
     _parse_tsm_csv,
     _to_unified_rows,
 )
-from tsm.ui.views._utils import populate_combo, set_table_cell
+from tsm.ui.views._utils import populate_combo
+from tsm.ui.views.accounting_dashboard import ITEM_COL as _ITEM_COL
+from tsm.ui.views.accounting_dashboard import AccountingDashboard
 from tsm.wow.accounts import scan_tsm_accounts
 
 logger = logging.getLogger(__name__)
@@ -52,6 +62,10 @@ _DB_KEYS = {
     "Canceled Auctions": "csvCancelled",
 }
 
+# Types that move gold. Expired and cancelled auctions are recorded by the addon
+# but net to nothing, so they are excluded from the money figures.
+_FINANCIAL_KEYS = ("Sales", "Purchases", "Income", "Expenses")
+
 _SUFFIXES = {
     "_retail_": "",
     "_classic_era_": "-Classic",
@@ -60,66 +74,11 @@ _SUFFIXES = {
 }
 
 _LAST_DIR_FILE = CONFIG_DIR / "last_export_dir"
-_PAGE_SIZE = 50
-_ALL_TIME_FROM = QDate(2004, 11, 23)  # WoW release date
-
-_TYPE_SHORT = {
-    "Sales": "Sale",
-    "Purchases": "Purchase",
-    "Income": "Income",
-    "Expenses": "Expense",
-    "Expired Auctions": "Expired",
-    "Canceled Auctions": "Canceled",
-}
-
-_TYPE_COLOR = {
-    "Sales": "#4caf50",
-    "Purchases": "#f44336",
-    "Income": "#4caf50",
-    "Expenses": "#f44336",
-    "Expired Auctions": "#888888",
-    "Canceled Auctions": "#888888",
-}
-
-
-
-def _make_gold_cell(copper: int) -> QLabel:
-    """Right-aligned QLabel with the number in sign-color and 'g' in gold color."""
-    if copper == 0:
-        html = '<span style="color:#888888">0</span><span style="color:#f0c040">g</span>'
-    else:
-        num_color = "#4caf50" if copper > 0 else "#f44336"
-        sign = "+" if copper > 0 else ""
-        gold = copper / 10000
-        html = (
-            f'<span style="color:{num_color}">{sign}{gold:,.0f}</span>'
-            f'<span style="color:#f0c040">g</span>'
-        )
-    lbl = QLabel(html)
-    lbl.setTextFormat(Qt.TextFormat.RichText)
-    lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-    lbl.setStyleSheet("background: transparent; padding-right: 4px;")
-    return lbl
-
-
-def _qdate_to_ts(d: QDate) -> int:
-    return int(datetime(d.year(), d.month(), d.day()).timestamp())
-
-
-# ── Hover event filter ────────────────────────────────────────────────────────
-
-_ITEM_COL = 1  # column index of the "Item" cell in the preview table
 _TOOLTIP_DELAY_MS = 500
-_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-_SPINNER_COLOR = "#666666"
 
 
 class _ItemHoverFilter(QObject):
-    """Event filter installed on the preview table viewport.
-
-    Shows a WoW-style tooltip when the cursor dwells over a cell in the
-    Item column that has cached tooltip data.
-    """
+    """Event filter that pops a WoW-style tooltip over the item column."""
 
     def __init__(
         self,
@@ -127,11 +86,13 @@ class _ItemHoverFilter(QObject):
         tooltip: WowItemTooltip,
         cache: ItemCache,
         parent: QObject | None = None,
+        item_col: int = _ITEM_COL,
     ) -> None:
         super().__init__(parent)
         self._table = table
         self._tooltip = tooltip
         self._cache = cache
+        self._item_col = item_col
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(_TOOLTIP_DELAY_MS)
@@ -146,8 +107,8 @@ class _ItemHoverFilter(QObject):
             pos = me.position().toPoint()
             col = self._table.columnAt(pos.x())
             row = self._table.rowAt(pos.y())
-            if col == _ITEM_COL and row >= 0:
-                cell = self._table.item(row, _ITEM_COL)
+            if col == self._item_col and row >= 0:
+                cell = self._table.item(row, self._item_col)
                 if cell:
                     item_id = cell.data(Qt.ItemDataRole.UserRole)
                     if item_id and _is_fetchable(str(item_id)):
@@ -175,11 +136,10 @@ class _ItemHoverFilter(QObject):
             self._tooltip.show_for(tooltip_html, quality, gx, gy)
 
 
-# ── View ──────────────────────────────────────────────────────────────────────
-
 class AccountingExportView(QWidget):
-    # Emitted from background thread when Wowhead fetch completes
+    # Emitted from a background thread when a Wowhead or icon fetch completes
     _items_fetched: Signal = Signal(object)
+    _icons_fetched: Signal = Signal(object)
 
     def __init__(self, wow_detector=None, parent=None):
         super().__init__(parent)
@@ -187,29 +147,21 @@ class AccountingExportView(QWidget):
         self._last_export_dir = self._load_last_dir()
         self._sv_cache: dict[str, str] = {}
         self._sv_cache_key: str = ""
+        self._sv_db: dict = {}
         self._parsed: dict[str, tuple[list[str], list[list[str]]]] = {}
-        self._all_rows: list[dict] = []
-        self._current_page: int = 0
+        self._rows: list[dict] = []  # everything in range, after the character filter
         self._accounts: dict[str, list[str]] = {}
-        # item_id -> list of row indices currently showing that item
-        self._preview_id_rows: dict[str, list[int]] = {}
-        # Summary labels - assigned in _build_summary_widget via setattr
-        self._lbl_sales: QLabel
-        self._lbl_purchases: QLabel
-        self._lbl_net: QLabel
-        self._lbl_count: QLabel
+        self._range_days: int | None = None  # chart range, None means all
+        self._last_stats = None
 
         self._item_cache = ItemCache()
-        self._loading_rows: dict[int, str] = {}  # row -> item_id currently spinning
-        self._spinner_frame = 0
-        self._spinner_timer = QTimer()
-        self._spinner_timer.setInterval(80)
-        self._spinner_timer.timeout.connect(self._tick_spinner)
+        self._icon_cache = IconCache()
         self._debounce = QTimer()
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(300)
-        self._debounce.timeout.connect(self._refresh_preview)
+        self._debounce.timeout.connect(self._refresh)
         self._items_fetched.connect(self._on_items_fetched)
+        self._icons_fetched.connect(self._on_icons_fetched)
 
         self._setup_ui()
         self.populate()
@@ -236,181 +188,58 @@ class AccountingExportView(QWidget):
     # ── UI setup ─────────────────────────────────────────────────────
 
     def _setup_ui(self) -> None:
+        # No outer scroll area: the item table scrolls on its own, and nesting
+        # one scroll inside another makes the wheel ambiguous.
         vbox = QVBoxLayout(self)
         vbox.setContentsMargins(10, 10, 10, 10)
         vbox.setSpacing(8)
-        vbox.addLayout(self._build_account_row())
-        vbox.addLayout(self._build_date_row())
-        vbox.addLayout(self._build_checkboxes())
-        vbox.addWidget(self._build_summary_widget())
-        vbox.addLayout(self._build_preview_header())
-        vbox.addWidget(self._build_preview_table(), 1)
-        vbox.addLayout(self._build_pagination_row())
+        vbox.addLayout(self._build_selector_row())
+
+        self._dashboard = AccountingDashboard(self._item_cache, self._icon_cache)
+        self._dashboard.range_changed.connect(self._on_range_changed)
+        vbox.addWidget(self._dashboard, 1)
+
         self._setup_tooltip()
+
         self._export_btn = QPushButton("Export to CSV")
         self._export_btn.setFixedHeight(32)
         self._export_btn.clicked.connect(self._export)
         vbox.addWidget(self._export_btn)
 
-    def _build_account_row(self) -> QHBoxLayout:
-        ar_row = QHBoxLayout()
-        ar_row.addWidget(QLabel("Account:"))
+    def _build_selector_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Account:"))
         self._account_combo = QComboBox()
         self._account_combo.setMinimumWidth(160)
         self._account_combo.currentTextChanged.connect(self._on_account_changed)
-        ar_row.addWidget(self._account_combo)
-        ar_row.addStretch()
-        ar_row.addWidget(QLabel("Realm:"))
+        row.addWidget(self._account_combo)
+        row.addStretch()
+
+        row.addWidget(QLabel("Realm:"))
         self._realm_combo = QComboBox()
         self._realm_combo.setMinimumWidth(160)
         self._realm_combo.currentTextChanged.connect(self._on_filter_changed)
-        ar_row.addWidget(self._realm_combo)
-        return ar_row
+        row.addWidget(self._realm_combo)
+        row.addStretch()
 
-    def _build_date_row(self) -> QHBoxLayout:
-        date_row = QHBoxLayout()
-        date_row.setSpacing(6)
-        date_row.addWidget(QLabel("From:"))
-        self._from_date = QDateEdit()
-        self._from_date.setCalendarPopup(True)
-        self._from_date.setDisplayFormat("dd.MM.yyyy")
-        self._from_date.setDate(QDate.currentDate().addDays(-30))
-        self._from_date.dateChanged.connect(self._on_from_date_changed)
-        date_row.addWidget(self._from_date)
-        lbl_to = QLabel("to")
-        lbl_to.setObjectName("hint")
-        date_row.addWidget(lbl_to)
-        self._to_date = QDateEdit()
-        self._to_date.setCalendarPopup(True)
-        self._to_date.setDisplayFormat("dd.MM.yyyy")
-        self._to_date.setDate(QDate.currentDate())
-        self._to_date.setMinimumDate(self._from_date.date())
-        self._from_date.setMaximumDate(self._to_date.date())
-        self._to_date.dateChanged.connect(self._on_to_date_changed)
-        date_row.addWidget(self._to_date)
-        date_row.addStretch()
-        for text, slot in [
-            ("Last 7d", lambda: self._set_range(7)),
-            ("Last 30d", lambda: self._set_range(30)),
-            ("All time", self._set_all_time),
-        ]:
-            btn = QPushButton(text)
-            btn.setObjectName("secondary")
-            btn.clicked.connect(slot)
-            date_row.addWidget(btn)
-        return date_row
-
-    def _build_checkboxes(self) -> QGridLayout:
-        cb_grid = QGridLayout()
-        cb_grid.setHorizontalSpacing(24)
-        cb_grid.setVerticalSpacing(4)
-        self._checkboxes: dict[str, QCheckBox] = {}
-        for i, label in enumerate(_DB_KEYS.keys()):
-            cb = QCheckBox(label)
-            cb.setChecked(label in ("Sales", "Purchases"))
-            cb.stateChanged.connect(self._on_filter_changed)
-            self._checkboxes[label] = cb
-            cb_grid.addWidget(cb, i // 3, i % 3)
-        return cb_grid
-
-    def _build_preview_header(self) -> QHBoxLayout:
-        preview_hdr = QHBoxLayout()
-        lbl_preview = QLabel("Preview")
-        lbl_preview.setObjectName("hint")
-        preview_hdr.addWidget(lbl_preview)
-        preview_hdr.addStretch()
-        self._preview_count = QLabel("")
-        self._preview_count.setObjectName("hint")
-        preview_hdr.addWidget(self._preview_count)
-        return preview_hdr
-
-    def _build_preview_table(self) -> QTableWidget:
-        self._table = QTableWidget(0, 5)
-        self._table.setHorizontalHeaderLabels(["Type", "Item", "Qty", "Gold", "Date"])
-        self._table.setAlternatingRowColors(True)
-        self._table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._table.setShowGrid(False)
-        self._table.verticalHeader().setVisible(False)
-        self._table.verticalHeader().setDefaultSectionSize(24)
-        hdr = self._table.horizontalHeader()
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        hdr.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        self._table.setColumnWidth(3, 80)
-        return self._table
-
-    def _build_pagination_row(self) -> QHBoxLayout:
-        _assets = Path(__file__).parent.parent / "assets"
-        pag_row = QHBoxLayout()
-        pag_row.setSpacing(0)
-        pag_row.setContentsMargins(0, 0, 0, 0)
-        self._btn_prev = QPushButton()
-        self._btn_prev.setObjectName("secondary")
-        self._btn_prev.setFixedSize(28, 28)
-        self._btn_prev.setIcon(QIcon(str(_assets / "chevron-left.svg")))
-        self._btn_prev.setIconSize(QSize(16, 16))
-        self._btn_prev.clicked.connect(self._prev_page)
-        self._page_label = QLabel("Page 1 of 1")
-        self._page_label.setObjectName("hint")
-        self._page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._btn_next = QPushButton()
-        self._btn_next.setObjectName("secondary")
-        self._btn_next.setFixedSize(28, 28)
-        self._btn_next.setIcon(QIcon(str(_assets / "chevron-right.svg")))
-        self._btn_next.setIconSize(QSize(16, 16))
-        self._btn_next.clicked.connect(self._next_page)
-        pag_row.addWidget(self._btn_prev)
-        pag_row.addStretch()
-        pag_row.addWidget(self._page_label)
-        pag_row.addStretch()
-        pag_row.addWidget(self._btn_next)
-        return pag_row
+        row.addWidget(QLabel("Character:"))
+        self._character_combo = QComboBox()
+        self._character_combo.setMinimumWidth(150)
+        self._character_combo.addItem(ALL_CHARACTERS)
+        self._character_combo.currentTextChanged.connect(self._on_filter_changed)
+        row.addWidget(self._character_combo)
+        return row
 
     def _setup_tooltip(self) -> None:
         self._wow_tooltip = WowItemTooltip()
+        table = self._dashboard.table
         self._hover_filter = _ItemHoverFilter(
-            self._table, self._wow_tooltip, self._item_cache, self
+            table, self._wow_tooltip, self._item_cache, self
         )
-        self._table.viewport().setMouseTracking(True)
-        self._table.viewport().installEventFilter(self._hover_filter)
+        table.viewport().setMouseTracking(True)
+        table.viewport().installEventFilter(self._hover_filter)
 
-    def _build_summary_widget(self) -> QWidget:
-        box = QWidget()
-        box.setObjectName("accounting-summary")
-        layout = QHBoxLayout(box)
-        layout.setContentsMargins(14, 8, 14, 8)
-        layout.setSpacing(32)
-
-        stats = [
-            ("_lbl_sales", "Total sales", "#4caf50"),
-            ("_lbl_purchases", "Total purchases", "#f44336"),
-            ("_lbl_net", "Net gold", "#4caf50"),
-            ("_lbl_count", "Transactions", "#f26522"),
-        ]
-        for attr, header_text, color in stats:
-            col = QWidget()
-            col.setStyleSheet("background: transparent;")
-            col_vbox = QVBoxLayout(col)
-            col_vbox.setContentsMargins(0, 0, 0, 0)
-            col_vbox.setSpacing(2)
-            hdr_lbl = QLabel(header_text)
-            hdr_lbl.setStyleSheet("color: #888888; font-size: 11px; background: transparent;")
-            val_lbl = QLabel("--")
-            val_lbl.setStyleSheet(
-                f"color: {color}; font-weight: bold; font-size: 13px; background: transparent;"
-            )
-            col_vbox.addWidget(hdr_lbl)
-            col_vbox.addWidget(val_lbl)
-            setattr(self, attr, val_lbl)
-            layout.addWidget(col)
-
-        layout.addStretch()
-        return box
-
-    # ── Public ───────────────────────────────────────────────────────
+    # ── Public API ───────────────────────────────────────────────────
 
     def set_detector(self, detector) -> None:
         self._detector = detector
@@ -430,28 +259,12 @@ class AccountingExportView(QWidget):
         self._parsed = {}
         self._on_filter_changed()
 
-    def _on_from_date_changed(self, date: QDate) -> None:
-        self._to_date.setMinimumDate(date)
-        self._debounce.start()
-
-    def _on_to_date_changed(self, date: QDate) -> None:
-        self._from_date.setMaximumDate(date)
-        self._debounce.start()
-
     def _on_filter_changed(self, *_: object) -> None:
         self._debounce.start()
 
-    def _set_range(self, days: int) -> None:
-        self._from_date.clearMaximumDate()
-        self._to_date.clearMinimumDate()
-        self._from_date.setDate(QDate.currentDate().addDays(-days))
-        self._to_date.setDate(QDate.currentDate())
-
-    def _set_all_time(self) -> None:
-        self._from_date.clearMaximumDate()
-        self._to_date.clearMinimumDate()
-        self._from_date.setDate(_ALL_TIME_FROM)
-        self._to_date.setDate(QDate.currentDate())
+    def _on_range_changed(self, days: object) -> None:
+        self._range_days = days if isinstance(days, int) else None
+        self._refresh()
 
     # ── Data loading ─────────────────────────────────────────────────
 
@@ -464,6 +277,7 @@ class AccountingExportView(QWidget):
 
         self._sv_cache = {}
         self._parsed = {}
+        self._sv_db = {}
         self._sv_cache_key = cache_key
 
         if not account or not realm:
@@ -494,7 +308,21 @@ class AccountingExportView(QWidget):
             val = db.get(full_key, "")
             if val:
                 self._sv_cache[label] = val
+        self._sv_db = db
+        self._populate_characters(db, realm)
         logger.debug("Loaded SV for %s / %s (%d keys)", account, realm, len(self._sv_cache))
+
+    def _populate_characters(self, db: dict, realm: str) -> None:
+        """Refill the character combo, keeping the selection when it still exists."""
+        previous = self._character_combo.currentText()
+        self._character_combo.blockSignals(True)
+        self._character_combo.clear()
+        self._character_combo.addItem(ALL_CHARACTERS)
+        for name in characters_for_realm(db, realm):
+            self._character_combo.addItem(name)
+        index = self._character_combo.findText(previous)
+        self._character_combo.setCurrentIndex(max(0, index))
+        self._character_combo.blockSignals(False)
 
     def _get_parsed(self, label: str) -> tuple[list[str], list[list[str]]]:
         if label in self._parsed:
@@ -507,195 +335,97 @@ class AccountingExportView(QWidget):
         self._parsed[label] = (headers, rows)
         return headers, rows
 
-    # ── Preview refresh ──────────────────────────────────────────────
+    def _cutoff(self) -> int:
+        """Oldest timestamp the current range admits, measured from now.
 
-    def _refresh_preview(self) -> None:
+        Anchoring on the newest row instead would make "1D" mean "the last day
+        that happens to have data", so an account idle for months would still
+        show a busy day.
+        """
+        if self._range_days is None:
+            return 0
+        return int(time.time()) - self._range_days * 86400
+
+    # ── Refresh ──────────────────────────────────────────────────────
+
+    def _refresh(self) -> None:
         self._load_sv()
 
-        from_ts = _qdate_to_ts(self._from_date.date())
-        to_ts = _qdate_to_ts(self._to_date.date()) + 86399  # inclusive end of day
+        character = self._character_combo.currentText() or ALL_CHARACTERS
+        cutoff = self._cutoff()
 
-        checked = [label for label, cb in self._checkboxes.items() if cb.isChecked()]
-
-        all_rows: list[dict] = []
-        for label in checked:
+        rows: list[dict] = []
+        for label in _FINANCIAL_KEYS:
             headers, raw_rows = self._get_parsed(label)
             if not headers:
                 continue
-            hl = [h.lower().strip() for h in headers]
-            t_idx = _find_col(hl, _TIME_COLS)
-            unified = _to_unified_rows(raw_rows, headers, label)
-            if t_idx < 0:
-                all_rows.extend(unified)
-                continue
-            for r in unified:
-                if from_ts <= r["timestamp"] <= to_ts:
-                    all_rows.append(r)
+            for row in _to_unified_rows(raw_rows, headers, label):
+                if row["timestamp"] < cutoff:
+                    continue
+                if character != ALL_CHARACTERS and row.get("player") != character:
+                    continue
+                rows.append(row)
+        rows.sort(key=lambda r: r["timestamp"], reverse=True)
+        self._rows = rows
 
-        all_rows.sort(key=lambda r: r["timestamp"], reverse=True)
-        self._all_rows = all_rows
-
-        total = len(all_rows)
-        self._preview_count.setText(f"{total:,} rows")
-        self._export_btn.setText(f"Export to CSV ({total:,} rows)")
-
-        # Summary
-        sales_c = sum(r["copper"] for r in all_rows if r["label"] == "Sales")
-        buys_c = abs(sum(r["copper"] for r in all_rows if r["label"] == "Purchases"))
-        net_c = sales_c - buys_c
-
-        self._lbl_sales.setText(_fmt_gold(sales_c))
-        self._lbl_purchases.setText(_fmt_gold(buys_c))
-        net_str = _fmt_gold(abs(net_c), with_sign=(net_c >= 0))
-        if net_c < 0:
-            net_str = "-" + _fmt_gold(abs(net_c))
-        net_color = "#4caf50" if net_c >= 0 else "#f44336"
-        self._lbl_net.setText(net_str)
-        self._lbl_net.setStyleSheet(
-            f"color: {net_color}; font-weight: bold; font-size: 13px; background: transparent;"
+        series = merge_gold_logs(
+            collect_gold_logs(self._sv_db, self._realm_combo.currentText(), character)
         )
-        self._lbl_count.setText(f"{total:,}")
+        series = [p for p in series if p.timestamp >= cutoff]
 
-        self._current_page = 0
-        self._render_page()
+        stats = build_stats(rows, series, *self._span(rows, series))
+        self._last_stats = stats
+        self._dashboard.set_stats(stats)
+        self._export_btn.setText(f"Export to CSV ({len(rows):,} rows)")
 
-    def _render_page(self) -> None:
-        """Populate the table with the current page of _all_rows."""
-        self._spinner_timer.stop()
-        self._loading_rows = {}
-        self._preview_id_rows = {}
+        self._request_item_data(stats.top_items)
 
-        total = len(self._all_rows)
-        num_pages = max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE)
-        self._current_page = max(0, min(self._current_page, num_pages - 1))
+    def _span(self, rows: list[dict], series: list[GoldPoint]) -> tuple[int, int]:
+        """Start and end of the data actually shown, for the per-day averages."""
+        stamps = [r["timestamp"] for r in rows if r["timestamp"]]
+        stamps += [p.timestamp for p in series]
+        if not stamps:
+            return 0, 0
+        return min(stamps), max(stamps)
 
-        start = self._current_page * _PAGE_SIZE
-        page_rows = self._all_rows[start : start + _PAGE_SIZE]
-
-        self._page_label.setText(f"Page {self._current_page + 1} of {num_pages}")
-        self._btn_prev.setEnabled(self._current_page > 0)
-        self._btn_next.setEnabled(self._current_page < num_pages - 1)
-
-        self._table.setRowCount(len(page_rows))
-        missing_ids: list[str] = []
-
-        for i, r in enumerate(page_rows):
-            label = r["label"]
-            color = _TYPE_COLOR.get(label, "#d0d0d0")
-            copper = r["copper"]
-
-            set_table_cell(self._table, i, 0, _TYPE_SHORT.get(label, label), color)
-
-            base = _base_item_str(r["item"])
-            item_id = base[2:] if base.startswith("i:") else base
-            if not _is_fetchable(item_id):
-                set_table_cell(self._table, i, 1, base)
-            else:
-                cached = self._item_cache.get_name(item_id)
-                if cached:
-                    set_table_cell(self._table, i, 1, cached)
-                else:
-                    set_table_cell(self._table, i, 1, _SPINNER_FRAMES[0], _SPINNER_COLOR)
-                    self._loading_rows[i] = item_id
-                    missing_ids.append(item_id)
-                cell = self._table.item(i, 1)
-                if cell:
-                    cell.setData(Qt.ItemDataRole.UserRole, item_id)
-                self._preview_id_rows.setdefault(item_id, []).append(i)
-
-            set_table_cell(self._table, i, 2, str(r["qty"]))
-            qty_item = self._table.item(i, 2)
-            if qty_item:
-                qty_item.setTextAlignment(
-                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-                )
-
-            self._table.setCellWidget(i, 3, _make_gold_cell(copper))
-
-            dt_str = ""
-            if r["timestamp"]:
-                with contextlib.suppress(OSError, OverflowError):
-                    dt_str = datetime.fromtimestamp(r["timestamp"]).strftime("%d.%m.%y")
-            set_table_cell(self._table, i, 4, dt_str)
-
-        # Gold column: ResizeToContents doesn't measure cell widgets, so calculate manually
-        fm = QFontMetrics(self._table.font())
-        max_w = 60
-        for r in page_rows:
-            c = r["copper"]
-            if c == 0:
-                text = "0g"
-            else:
-                sign = "+" if c > 0 else ""
-                text = f"{sign}{c / 10000:,.0f}g"
-            max_w = max(max_w, fm.horizontalAdvance(text) + 24)
-        self._table.setColumnWidth(3, max_w)
-
-        # Kick off background fetch for any item IDs not yet in cache
-        if missing_ids:
-            unique_missing = list(dict.fromkeys(missing_ids))
+    def _request_item_data(self, items) -> None:
+        """Resolve names first, then icons: a slug only exists once a name does."""
+        missing = [
+            t.item_id.split(":")[1]
+            for t in items
+            if t.item_id.startswith("i:") and not self._item_cache.get(t.item_id.split(":")[1])
+        ]
+        if missing:
             self._item_cache.ensure_fetched(
-                unique_missing,
-                lambda fetched, attempted: self._items_fetched.emit((fetched, attempted)),
+                missing, lambda fetched, attempted: self._items_fetched.emit(fetched)
             )
-            self._spinner_timer.start()
+        self._dashboard.request_icons(
+            list(items), lambda fetched: self._icons_fetched.emit(fetched)
+        )
 
-    def _prev_page(self) -> None:
-        if self._current_page > 0:
-            self._current_page -= 1
-            self._render_page()
+    def _on_items_fetched(self, _fetched: object) -> None:
+        """Names arrived on a worker thread; redraw and pull their icons."""
+        if self._last_stats is None:
+            return
+        self._dashboard.set_stats(self._last_stats)
+        self._dashboard.request_icons(
+            list(self._last_stats.top_items), lambda f: self._icons_fetched.emit(f)
+        )
 
-    def _next_page(self) -> None:
-        total = len(self._all_rows)
-        num_pages = max(1, (total + _PAGE_SIZE - 1) // _PAGE_SIZE)
-        if self._current_page < num_pages - 1:
-            self._current_page += 1
-            self._render_page()
-
-    def _tick_spinner(self) -> None:
-        self._spinner_frame = (self._spinner_frame + 1) % len(_SPINNER_FRAMES)
-        char = _SPINNER_FRAMES[self._spinner_frame]
-        for row in self._loading_rows:
-            cell = self._table.item(row, _ITEM_COL)
-            if cell:
-                cell.setText(char)
-
-    def _on_items_fetched(self, payload: object) -> None:
-        """Called on the Qt main thread when background fetch completes."""
-        fetched: dict[str, object]
-        attempted: list[str]
-        fetched, attempted = payload  # type: ignore[misc]
-
-        for item_id in attempted:
-            rows = self._preview_id_rows.get(item_id, [])
-            data = fetched.get(item_id)
-            name = str(data.get("name")) if isinstance(data, dict) and data.get("name") else None
-            for row in rows:
-                cell = self._table.item(row, _ITEM_COL)
-                if cell:
-                    cell.setText(name if name else f"i:{item_id}")
-                self._loading_rows.pop(row, None)
-
-        if not self._loading_rows:
-            self._spinner_timer.stop()
+    def _on_icons_fetched(self, _fetched: object) -> None:
+        if self._last_stats is not None:
+            self._dashboard.set_stats(self._last_stats)
 
     # ── Export ───────────────────────────────────────────────────────
 
     def _export(self) -> None:
-        account = self._account_combo.currentText()
         realm = self._realm_combo.currentText()
-        if not account or not realm:
+        if not self._account_combo.currentText() or not realm:
             QMessageBox.warning(self, "TSM", "Please select an account and realm.")
             return
-
-        checked = [label for label, cb in self._checkboxes.items() if cb.isChecked()]
-        if not checked:
-            QMessageBox.warning(self, "TSM", "Please select at least one data type.")
+        if not self._rows:
+            QMessageBox.information(self, "TSM", "Nothing to export for this selection.")
             return
-
-        self._load_sv()
-        from_ts = _qdate_to_ts(self._from_date.date())
-        to_ts = _qdate_to_ts(self._to_date.date()) + 86399
 
         export_dir = QFileDialog.getExistingDirectory(
             self, "Select Export Directory", str(self._last_export_dir)
@@ -706,35 +436,44 @@ class AccountingExportView(QWidget):
         self._last_export_dir = export_path
         self._save_last_dir(export_path)
 
-        from_str = self._from_date.date().toString("yyyyMMdd")
-        to_str = self._to_date.date().toString("yyyyMMdd")
+        character = self._character_combo.currentText() or ALL_CHARACTERS
+        cutoff = self._cutoff()
+        suffix = "all" if self._range_days is None else f"{self._range_days}d"
+        if character != ALL_CHARACTERS:
+            suffix = f"{character}_{suffix}"
 
-        exported = []
-        errors = []
-
-        for label in checked:
+        exported: list[str] = []
+        errors: list[str] = []
+        for label in _DB_KEYS:
             headers, raw_rows = self._get_parsed(label)
             if not headers or not raw_rows:
-                errors.append(label)
                 continue
 
             hl = [h.lower().strip() for h in headers]
             t_idx = _find_col(hl, _TIME_COLS)
+            p_idx = _find_col(hl, ["player"])
 
             filtered = []
             for row in raw_rows:
                 try:
                     ts = int(row[t_idx]) if 0 <= t_idx < len(row) else 0
-                    if from_ts <= ts <= to_ts:
-                        filtered.append(row)
                 except (ValueError, IndexError):
                     continue
+                if ts < cutoff:
+                    continue
+                if (
+                    character != ALL_CHARACTERS
+                    and 0 <= p_idx < len(row)
+                    and row[p_idx].strip() != character
+                ):
+                    continue
+                filtered.append(row)
 
             if not filtered:
                 continue
 
             safe_label = label.replace(" ", "_")
-            out_path = export_path / f"Accounting_{realm}_{safe_label}_{from_str}_{to_str}.csv"
+            out_path = export_path / f"Accounting_{realm}_{safe_label}_{suffix}.csv"
             try:
                 with open(out_path, "w", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f)
@@ -750,17 +489,18 @@ class AccountingExportView(QWidget):
         if exported:
             msg += f"Exported {len(exported)} file(s) to {export_path}."
         if errors:
-            msg += f"\nNo data found for: {', '.join(errors)}"
+            msg += f"\nFailed to write: {', '.join(errors)}"
         QMessageBox.information(self, "TSM", msg or "Nothing to export.")
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
 
+
 def _get_wow_root(detector) -> Path | None:
     """Return the WoW base directory from the first detected install."""
     if detector is None:
         return None
-    installs = detector.installs
+    installs = getattr(detector, "installs", None)
     if not installs:
         return None
     from tsm.wow.utils import normalize_wow_base
@@ -769,8 +509,8 @@ def _get_wow_root(detector) -> Path | None:
 
 
 def _split_account_suffix(account: str) -> tuple[str, str]:
-    """Split 'ACCOUNTNAME-Classic' into ('ACCOUNTNAME', '_classic_era_')."""
-    for gv, suffix in _SUFFIXES.items():
+    """Split 'STANIBNET-Classic' into ('STANIBNET', '_classic_era_')."""
+    for gv_dir, suffix in _SUFFIXES.items():
         if suffix and account.endswith(suffix):
-            return (account[: -len(suffix)], gv)
-    return (account, "_retail_")
+            return account[: -len(suffix)], gv_dir
+    return account, "_retail_"

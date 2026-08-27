@@ -12,8 +12,13 @@ Authentication flow (from decompiled source):
    → returns user_info dict with session, userId, isPremium, endpointSubdomains
 
 3. All subsequent calls: http://{subdomain}.tradeskillmaster.com/v2/{endpoint_parts}
-   query params: session, version, time, token(HMAC), channel, tsm_version
+   query params: session, version, time, token(HMAC), channel
    HMAC token = SHA256(\"{version}:{time}:{SECRET}\")
+   tsm_version is sent on /v2/status only, carrying the installed
+   TradeSkillMaster addon version. The subdomain comes from endpointSubdomains,
+   which the server assigns per session: status lands on app-server while addon
+   lands on app-server4 or app-server5, and each one rejects endpoints it was
+   not assigned.
 
 AppData download flow:
 - Call status endpoint → returns realm/region list with appDataStrings
@@ -29,6 +34,7 @@ import contextlib
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from gzip import GzipFile
 from hashlib import sha256
 from io import BytesIO
@@ -44,6 +50,16 @@ from tsm.api.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class TSMApiError(RuntimeError):
+    """The API answered HTTP 200 with {"success": false, "error": ...}.
+
+    The server uses this envelope for every rejection: an expired or unknown
+    session, a route the contacted subdomain does not serve, a malformed query.
+    The message is generic ("Invalid request."), so it never identifies which.
+    """
+
 
 APP_VERSION = 41402  # From _version.pyc: VERSION = 41402
 HMAC_SECRET = "3FB1CC5EDC5B43F21CB8ACC23B42B703"  # From AppAPI.pyc
@@ -83,6 +99,9 @@ class TSMApiClient:
         self._session: aiohttp.ClientSession | None = None
         self._user_info: UserInfo = {"session": "", "userId": 0, "endpointSubdomains": {}}
         self._endpoint_subdomains: dict[str, str] = {}
+        self._reauth: Callable[[], Awaitable[None]] | None = None
+        self._reauth_lock = asyncio.Lock()
+        self._session_generation = 0
         self.auth = AuthAPI(self)
         self.status = StatusAPI(self)
         self.addon = AddonAPI(self)
@@ -126,13 +145,13 @@ class TSMApiClient:
         channel: str = "",
         tsm_version: str = "",
     ) -> Any:
-        """Make a request to http://{subdomain}.tradeskillmaster.com/v2/{parts}."""
-        endpoint = parts[0]
-        subdomain = self._subdomain_for(endpoint)
-        url = "http://{}.tradeskillmaster.com/v2/{}".format(subdomain, "/".join(parts))
-        params = _query_params(self._user_info.get("session", ""), channel, tsm_version)
+        """Make a request to http://{subdomain}.tradeskillmaster.com/v2/{parts}.
 
-        session = await self._get_session()
+        A rejected request is retried once after re-authenticating, so a session
+        the server no longer accepts recovers in place instead of leaving the
+        app broken until it is restarted.
+        """
+        endpoint = parts[0]
         req_headers: dict[str, str] = {}
         body = None
 
@@ -159,6 +178,56 @@ class TSMApiClient:
 
         method = "POST" if data is not None else "GET"
 
+        try:
+            return await self._send(parts, method, body, req_headers, channel, tsm_version)
+        except TSMApiError as e:
+            if not await self._try_reauth(endpoint, e):
+                raise
+        return await self._send(parts, method, body, req_headers, channel, tsm_version)
+
+    async def _try_reauth(self, endpoint: str, error: TSMApiError) -> bool:
+        """Log in again after a rejection. Returns True if the caller should retry.
+
+        The auth endpoint is excluded so the login inside the callback cannot
+        recurse, which is also what keeps it from deadlocking on the lock. When
+        several requests are rejected at once only the first logs in; the others
+        wait and then retry against the session it produced.
+        """
+        if self._reauth is None or endpoint == "auth":
+            return False
+
+        generation = self._session_generation
+        async with self._reauth_lock:
+            if self._session_generation != generation:
+                return True  # another caller already refreshed the session
+            logger.warning("API rejected the request (%s), re-authenticating", error)
+            try:
+                await self._reauth()
+            except Exception:
+                logger.exception("Re-authentication failed")
+                return False
+        return True
+
+    async def _send(
+        self,
+        parts: tuple[str, ...],
+        method: str,
+        body: bytes | None,
+        req_headers: dict[str, str],
+        channel: str,
+        tsm_version: str,
+    ) -> Any:
+        """One request plus the transient-failure retries.
+
+        The URL and query params are built here rather than by the caller: a
+        re-authentication in between changes both the session token and the
+        subdomain this endpoint is served from.
+        """
+        subdomain = self._subdomain_for(parts[0])
+        url = "http://{}.tradeskillmaster.com/v2/{}".format(subdomain, "/".join(parts))
+        params = _query_params(self._user_info.get("session", ""), channel, tsm_version)
+        session = await self._get_session()
+
         for attempt in range(MAX_RETRIES):
             try:
                 async with session.request(
@@ -167,7 +236,13 @@ class TSMApiClient:
                     resp.raise_for_status()
                     ct = resp.headers.get("content-type", "")
                     if "application/json" in ct:
-                        return await resp.json(content_type=None)
+                        payload = await resp.json(content_type=None)
+                        # Every /v2 endpoint wraps its answer in {"success": ...}.
+                        # Only an explicit false is an error: a response without
+                        # the key is passed through rather than rejected.
+                        if isinstance(payload, dict) and payload.get("success") is False:
+                            raise TSMApiError(payload.get("error", payload))
+                        return payload
                     if "application/zip" in ct or "application/octet-stream" in ct:
                         return await resp.read()
                     # text/plain or other
@@ -235,6 +310,18 @@ class TSMApiClient:
     def set_user_info(self, user_info: UserInfo) -> None:
         self._user_info = user_info
         self._endpoint_subdomains = user_info["endpointSubdomains"]
+        self._session_generation += 1
+
+    def set_reauth_callback(self, callback: Callable[[], Awaitable[None]] | None) -> None:
+        """Register a coroutine that logs in again and refreshes the user info.
+
+        A rejected request is retried once after calling it. Both things that
+        make the server reject us are cured by a fresh /v2/auth: the session
+        token expires, and endpointSubdomains is handed out per session, so a
+        subdomain that stops serving an endpoint is only corrected by logging
+        in again.
+        """
+        self._reauth = callback
 
 
 class AuthAPI:
@@ -296,20 +383,22 @@ class AddonAPI:
     def __init__(self, client: TSMApiClient):
         self._c = client
 
-    async def download(self, name: str, channel: str = "release", tsm_version: str = "") -> bytes:
-        """Download addon zip file."""
-        # API expects a bare version number; strip any leading "v" from version_str values.
-        normalized_version = tsm_version.lstrip("v") if tsm_version else tsm_version
-        result = await self._c.api_request(
-            "addon", name, channel=channel, tsm_version=normalized_version
-        )
+    async def download(self, name: str, channel: str = "release") -> bytes:
+        """Download an addon zip.
+
+        ``name`` carries the game-version suffix ("", "-Classic", "-Progression",
+        "-Anniversary"); the server resolves it to the package for that client.
+
+        The endpoint takes no ``tsm_version`` parameter. The original Windows
+        client sends ``tsm_version`` only on /v2/status, where it carries the
+        installed TradeSkillMaster addon version (AppAPI.py:171 vs :175).
+        """
+        result = await self._c.api_request("addon", name, channel=channel)
         if isinstance(result, bytes):
             return result
         if isinstance(result, dict):
-            if not result.get("success", True):
-                raise ValueError(
-                    f"Addon download failed: {result.get('error', result)}"
-                )
+            # The endpoint has answered with a JSON {"url": ...} CDN redirect in
+            # the past instead of the zip bytes; follow it when it does.
             url = (
                 result.get("url")
                 or result.get("download_url")

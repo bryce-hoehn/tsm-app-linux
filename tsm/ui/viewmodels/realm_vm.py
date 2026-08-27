@@ -33,6 +33,7 @@ class RealmViewModel(QObject):
     loading_changed = Signal(bool)
     error_occurred = Signal(str)
     addons_updated = Signal(list)  # emits list[dict] from status API
+    remove_failed = Signal(str)  # realm removal was refused, carries the message
 
     def __init__(self, auction_service=None, parent: QObject | None = None):
         super().__init__(parent)
@@ -96,18 +97,32 @@ class RealmViewModel(QObject):
         bridge.finished.connect(lambda: self._set_loading(False))
         bridge.run(self._service.refresh_all_realms())
 
-    def remove_local(self, row: int) -> None:
-        """Remove a summary from the local list by index (optimistic UI update)."""
-        if 0 <= row < len(self._summaries):
-            self._summaries.pop(row)
+    def remove_local(self, summary: RealmSummary) -> None:
+        """Drop one summary from the local list (optimistic UI update).
+
+        Identity based rather than by index: the view groups rows across several
+        tables, so a table row number no longer maps onto this list.
+        """
+        self._summaries = [s for s in self._summaries if s is not summary]
 
     def remove_realm(self, game_version: str, region: str, name: str) -> None:
-        """Call realms2/remove API and refresh."""
+        """Remove a realm, then refresh. Emits remove_failed if the server refuses.
+
+        Without the error connection a refusal surfaces only as an unhandled
+        exception inside AsyncBridge, leaving the row hidden by the optimistic
+        remove_local() until the next sync quietly brings it back.
+        """
         if self._service is None:
             return
         bridge = AsyncBridge(self)
         bridge.result_ready.connect(lambda _: self.refresh_all())
+        bridge.error_occurred.connect(self._on_remove_error)
         bridge.run(self._service.remove_realm(game_version, region, name))
+
+    def _on_remove_error(self, error_msg: str) -> None:
+        logger.error("Realm removal failed: %s", error_msg)
+        self.remove_failed.emit(error_msg)
+        self.refresh_all()  # restore the optimistically hidden row
 
     def add_realm(
         self, game_version: str, realm_id: int, region: str = "", name: str = ""

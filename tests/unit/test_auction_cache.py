@@ -86,3 +86,86 @@ async def test_load_snapshot_missing_returns_empty(cache):
     statuses, saved_at = await cache.load_snapshot()
     assert statuses == []
     assert saved_at == 0
+
+
+@pytest.mark.asyncio
+async def test_migration_drops_bcc_rows_and_keeps_the_rest(tmp_path):
+    """v4 repairs installs affected by issue #19 without wiping working rows."""
+    import sqlite3
+
+    path = tmp_path / "legacy.db"
+    con = sqlite3.connect(path)
+    con.executescript(
+        """
+        CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+        INSERT INTO schema_version (version) VALUES (3);
+        CREATE TABLE user_added_realms (
+            game_version TEXT NOT NULL,
+            region TEXT NOT NULL,
+            name TEXT NOT NULL,
+            PRIMARY KEY (game_version, region, name)
+        );
+        INSERT INTO user_added_realms VALUES ('bcc', 'EU', 'Everlook-Horde');
+        INSERT INTO user_added_realms VALUES ('classic', 'HC-EU', 'Soulseeker-Alliance');
+        INSERT INTO user_added_realms VALUES ('anniversary', 'Fresh-EU', 'Thunderstrike-Alliance');
+        """
+    )
+    con.commit()
+    con.close()
+
+    db = Database(path)
+    await db.connect()
+    try:
+        cache = AuctionCache(db)
+        assert await cache.get_user_realms("bcc") == set()
+        assert await cache.get_user_realms("classic") == {("HC-EU", "Soulseeker-Alliance")}
+        assert await cache.get_user_realms("anniversary") == {
+            ("Fresh-EU", "Thunderstrike-Alliance")
+        }
+        async with db.connection.execute("SELECT version FROM schema_version") as cur:
+            row = await cur.fetchone()
+        assert row["version"] == 4
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_migration_collapses_a_multi_row_version_table(tmp_path):
+    """version is the PRIMARY KEY, so old code appended rows instead of replacing.
+
+    A database left with several rows must still report the highest version and
+    come back with exactly one row, otherwise every later migration re-runs on
+    each startup.
+    """
+    import sqlite3
+
+    path = tmp_path / "multirow.db"
+    con = sqlite3.connect(path)
+    con.executescript(
+        """
+        CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+        INSERT INTO schema_version (version) VALUES (1);
+        INSERT INTO schema_version (version) VALUES (3);
+        CREATE TABLE user_added_realms (
+            game_version TEXT NOT NULL,
+            region TEXT NOT NULL,
+            name TEXT NOT NULL,
+            PRIMARY KEY (game_version, region, name)
+        );
+        INSERT INTO user_added_realms VALUES ('classic', 'HC-EU', 'Soulseeker-Alliance');
+        """
+    )
+    con.commit()
+    con.close()
+
+    db = Database(path)
+    await db.connect()
+    try:
+        async with db.connection.execute("SELECT version FROM schema_version") as cur:
+            rows = await cur.fetchall()
+        assert [r["version"] for r in rows] == [4]
+        # read as v3, so the v3 wipe must not have re-run over a working row
+        cache = AuctionCache(db)
+        assert await cache.get_user_realms("classic") == {("HC-EU", "Soulseeker-Alliance")}
+    finally:
+        await db.close()

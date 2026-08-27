@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QDateTime, QLocale, QSize, Qt, QTimer
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -15,14 +15,23 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from tsm.ui.components.collapsible_group import CollapsibleGroup
 from tsm.ui.components.hover_button import HoverIconButton
 from tsm.ui.viewmodels.realm_vm import RealmSummary, RealmViewModel
-from tsm.ui.views._utils import populate_combo, set_table_cell
+from tsm.ui.views._utils import populate_combo, set_table_cell, table_content_height
+from tsm.ui.views.realm_grouping import (
+    GV_LABELS,
+    GV_ORDER,
+    RealmRow,
+    group_summaries,
+    realm_count,
+)
 
 _ASSETS = Path(__file__).parent.parent / "assets"
 
@@ -78,6 +87,8 @@ def _make_dot_cell(status: str, last_updated: int, is_region: bool) -> QWidget:
     return w
 
 
+_INDENT = "    "  # one level of nesting under a region header
+
 _TRASH_ICON = QIcon(str(_ASSETS / "trash.svg"))
 _TRASH_ICON_HOVER = QIcon(str(_ASSETS / "trash-hover.svg"))
 
@@ -90,6 +101,7 @@ class RealmDataView(QWidget):
         self._last_manual_refresh: float = 0.0
         self._vm.data_updated.connect(self._refresh)
         self._vm.loading_changed.connect(self._on_loading)
+        self._vm.remove_failed.connect(self._on_remove_failed)
         self._setup_ui()
         if realm_tree is not None:
             self._populate_gv_combo()
@@ -99,24 +111,52 @@ class RealmDataView(QWidget):
         vbox.setContentsMargins(0, 0, 0, 0)
         vbox.setSpacing(0)
 
-        self._table = QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(["Region/Realm", "AuctionDB", "Last Updated", ""])
-        self._table.setAlternatingRowColors(True)
-        self._table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._table.setShowGrid(False)
-        self._table.verticalHeader().setVisible(False)
-        hdr = self._table.horizontalHeader()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        content = QWidget()
+        content_vbox = QVBoxLayout(content)
+        content_vbox.setContentsMargins(0, 0, 0, 0)
+        content_vbox.setSpacing(0)
+
+        # One group per game version, created once so collapse state survives a sync.
+        self._groups: dict[str, CollapsibleGroup] = {}
+        self._tables: dict[str, QTableWidget] = {}
+        for game_version in GV_ORDER:
+            table = self._make_table()
+            group = CollapsibleGroup(GV_LABELS.get(game_version, game_version), table)
+            group.setVisible(False)
+            self._tables[game_version] = table
+            self._groups[game_version] = group
+            content_vbox.addWidget(group)
+
+        content_vbox.addStretch()
+        scroll.setWidget(content)
+        vbox.addWidget(scroll, 1)
+
+        vbox.addWidget(self._build_bottom())
+
+    def _make_table(self) -> QTableWidget:
+        table = QTableWidget(0, 4)
+        table.setHorizontalHeaderLabels(["Region/Realm", "AuctionDB", "Last Updated", ""])
+        table.setAlternatingRowColors(True)
+        table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setShowGrid(False)
+        table.verticalHeader().setVisible(False)
+        hdr = table.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self._table.setColumnWidth(1, 120)
-        self._table.setColumnWidth(3, 22)
-        self._table.horizontalHeader().setMinimumSectionSize(16)
-        vbox.addWidget(self._table, 1)
-
-        vbox.addWidget(self._build_bottom())
+        table.setColumnWidth(1, 120)
+        table.setColumnWidth(3, 22)
+        hdr.setMinimumSectionSize(16)
+        table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        return table
 
     def _build_bottom(self) -> QWidget:
         bottom = QWidget()
@@ -178,29 +218,56 @@ class RealmDataView(QWidget):
     # ── Table ────────────────────────────────────────────────────────
 
     def _refresh(self) -> None:
-        summaries = self._vm.summaries
-        self._table.setRowCount(len(summaries))
-        for row, s in enumerate(summaries):
-            set_table_cell(self._table, row, 0, s.display_name)
-            dot = _make_dot_cell(s.auctiondb_status, s.last_updated, s.is_region)
-            self._table.setCellWidget(row, 1, dot)
-            dt_str = fmt_ts(s.last_updated)
-            set_table_cell(self._table, row, 2, dt_str)
-            self._table.setCellWidget(row, 3, self._make_delete_btn(row, s))
+        grouped: dict[str, list[RealmRow]] = {
+            game_version: rows
+            for game_version, _label, rows in group_summaries(self._vm.summaries)
+        }
 
-    def _make_delete_btn(self, row: int, summary: RealmSummary) -> HoverIconButton:
+        for game_version, group in self._groups.items():
+            rows = grouped.get(game_version)
+            group.setVisible(bool(rows))
+            if not rows:
+                continue
+            self._fill_table(self._tables[game_version], rows)
+            count = realm_count(rows)
+            group.set_summary(f"{count} realm" if count == 1 else f"{count} realms")
+            height = table_content_height(self._tables[game_version], len(rows))
+            self._tables[game_version].setFixedHeight(height)
+            group.set_content_height(height)
+
+    def _fill_table(self, table: QTableWidget, rows: list[RealmRow]) -> None:
+        table.setRowCount(len(rows))
+        for row, entry in enumerate(rows):
+            set_table_cell(table, row, 0, _INDENT * entry.indent + entry.label)
+            if entry.is_region:
+                item = table.item(row, 0)
+                if item is not None:
+                    font = item.font()
+                    font.setWeight(QFont.Weight.Bold)
+                    item.setFont(font)
+
+            summary = entry.summary
+            table.setCellWidget(
+                row,
+                1,
+                _make_dot_cell(summary.auctiondb_status, summary.last_updated, entry.is_region),
+            )
+            set_table_cell(table, row, 2, fmt_ts(summary.last_updated))
+            # Regions cannot be removed, so they get no delete button at all.
+            table.setCellWidget(
+                row, 3, self._make_delete_btn(summary) if not entry.is_region else QWidget()
+            )
+
+    def _make_delete_btn(self, summary: RealmSummary) -> HoverIconButton:
         btn = HoverIconButton(_TRASH_ICON, _TRASH_ICON_HOVER)
         btn.setObjectName("row-action")
         btn.setIconSize(QSize(14, 14))
-        btn.clicked.connect(lambda _, r=row, s=summary: self._on_delete(r, s))
+        btn.clicked.connect(lambda _, s=summary: self._on_delete(s))
         return btn
 
     # ── Delete ───────────────────────────────────────────────────────
 
-    def _on_delete(self, row: int, summary: RealmSummary) -> None:
-        if summary.is_region:
-            QMessageBox.warning(self, "TSM", "Regions cannot be removed.")
-            return
+    def _on_delete(self, summary: RealmSummary) -> None:
         reply = QMessageBox.question(
             self,
             "TSM",
@@ -208,9 +275,14 @@ class RealmDataView(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._vm.remove_local(row)
+            self._vm.remove_local(summary)
             self._refresh()
             self._vm.remove_realm(summary.game_version, summary.region, summary.name)
+
+    def _on_remove_failed(self, error_msg: str) -> None:
+        """The server refused the removal. Same wording as the original app."""
+        logger.warning("Realm removal refused: %s", error_msg)
+        QMessageBox.warning(self, "TSM", "Failed to remove realm. Please try again later.")
 
     # ── Refresh ──────────────────────────────────────────────────────
 

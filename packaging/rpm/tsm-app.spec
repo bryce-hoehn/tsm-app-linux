@@ -1,5 +1,5 @@
 Name:           tsm-app
-Version:        1.1.11
+Version:        1.1.15
 Release:        1%{?dist}
 Summary:        TradeSkillMaster Desktop App for Linux
 
@@ -72,6 +72,60 @@ ep.write_text(''.join(lines))
 /usr/lib/tsm-app/
 
 %changelog
+* Thu Aug 27 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.15-1
+- Add: Accounting rebuilt as a dashboard: player gold over time with a hover
+  crosshair and 1D..All ranges, headline figures, Sales/Expenses/Profit panels,
+  and every item sold or bought with quality-framed icons and item ids
+- Add: item icons fetched from the Wowhead CDN and cached on disk
+- Change: a character selector narrows the chart and every figure; warbank and
+  guild gold count only under "All characters"
+- Change: the date pickers, type checkboxes, totals bar and transaction preview
+  are removed; Export to CSV is kept and follows the current selection
+- Change: money is shown as a gold/silver/copper split, matching the tooltip
+- Change: non-item rows (Repair Bill, Postage, Money Transfer) get a stand-in icon
+- Change: window opens at 1280x860 with a 1000x720 minimum, up from 740x600
+
+* Thu Aug 27 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.14-1
+- Fix: adding or removing a Classic Era or Anniversary realm did nothing or crashed
+  a worker; realms2/add and realms2/remove only exist for Retail and Progression,
+  and user_added_realms is the only filter for the catalogue game versions
+- Fix: removing a Retail or Progression realm sent the prefixed region ("BCC-EU");
+  the endpoint wants the bare code ("EU")
+- Fix: a refused removal now shows a message and restores the row instead of
+  raising in a worker thread
+- Change: Realm Data grouped by game version, one collapsible group each, matching
+  the Addon Versions tab; the region is a bold header carrying its own AuctionDB
+  status and timestamp with its realms listed beneath it
+- Change: realm names no longer repeat their region; region rows lose the delete
+  button that only answered "Regions cannot be removed."
+- Change: added-realm filter logs counts at INFO and names at DEBUG
+- Chore: collapsible group extracted to tsm/ui/components/collapsible_group.py and
+  shared by both grouped tabs; realm ordering moved to views/realm_grouping.py
+
+* Thu Aug 27 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.13-1
+- Fix: Progression (bcc) realms never synced; /v2/status is already account-scoped
+  for retail and bcc, so the added-realm filter that narrows the Classic Era and
+  Anniversary catalogues must not run for bcc. It compared status regions
+  ("BCC-EU") against rows stored from realms2/list ("EU"), matched nothing and
+  skipped every Progression realm silently (#19)
+- Fix: schema version never advanced past the first migration; version is the
+  PRIMARY KEY so INSERT OR REPLACE appended a row. Read with MAX() and collapse
+  the table to a single row
+- Fix: realms dropped by the added-realm filter are now logged
+- Change: bcc rows are no longer written to user_added_realms; schema v4 migration
+  deletes leftover bcc rows and keeps classic and anniversary ones
+
+* Thu Aug 27 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.12-1
+- Fix: addon download failing with "Invalid request." and never recovering; the
+  server now rejects a session ~10 min after login while auth refreshed every
+  25 min. Refresh is now every 5 min and a rejected request re-authenticates
+  once and retries
+- Fix: API error envelopes were swallowed on every endpoint except the addon
+  download; api_request() now raises TSMApiError for {success: false}
+- Fix: addon download no longer sends tsm_version; the original client sends it
+  on /v2/status only, carrying the installed TradeSkillMaster addon version
+- Fix: each WoW client now receives its own package instead of the retail build
+
 * Sat May 23 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.11-1
 - Fix: auto-detect WoW installed via Steam Proton; scan all compatdata/<appid>/pfx
   entries under ~/.local/share/Steam and ~/.steam/steam; previously only
@@ -94,20 +148,20 @@ ep.write_text(''.join(lines))
 - Fix: addon installation crash when TSM API returns JSON redirect instead of
   raw zip bytes; downloader follows redirect URL to CDN, backward compatible
 
-* Sat May 10 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.8-1
+* Sun May 10 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.8-1
 - Fix: Anniversary region parsing corrected - region code is the first segment
   for _anniversary_ (contributed by Korkd)
 - Fix: factionrealm scope parser handles un-indexed Anniversary SavedVariables entries
 - Fix: manually-added Classic Era / Anniversary realms now sync immediately; stored
   locally in SQLite on Add Realm, unioned with SavedVariables active-character set
 
-* Sat May 03 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.7-1
+* Sun May 03 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.7-1
 - Fix: restore strict Anniversary/Classic Era realm filter; skip game version
   entirely when no active characters found in SavedVariables instead of showing
   all 250+ API realms
 - Fix: install hicolor icons to system icon directories in .deb package
 
-* Tue Apr 22 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.6-1
+* Wed Apr 22 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.6-1
 - Add: Anniversary and Classic Era realms in Add Realm dropdown via status
   endpoint extraAnniversaryRealms/extraClassicRealms fields
 - Add: character filter relaxed for Anniversary/Classic Era when no active
@@ -116,7 +170,7 @@ ep.write_text(''.join(lines))
   with individual Qt module packages, bundle APScheduler 4.x/structlog/tomli-w,
   use python3 shebang and version-agnostic install path
 
-* Fri Apr 04 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.5-1
+* Sat Apr 04 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.5-1
 - Fix: AppHelper folder name corrected for non-retail game versions; always
   TradeSkillMaster_AppHelper regardless of version, confirmed against Windows
   reference; eliminates false "AppHelper missing" for Classic/Era/Anniversary

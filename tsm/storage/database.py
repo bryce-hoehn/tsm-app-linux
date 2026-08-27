@@ -9,7 +9,7 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 CREATE_AUCTION_CACHE = """
 CREATE TABLE IF NOT EXISTS auction_cache (
@@ -68,9 +68,13 @@ class Database:
         await self._db.execute(CREATE_SCHEMA_VERSION)
         await self._db.commit()
 
-        async with self._db.execute("SELECT version FROM schema_version") as cur:
+        # version is the PRIMARY KEY, so "INSERT OR REPLACE" appends a row rather
+        # than replacing the old one. Read the highest value and collapse the
+        # table back to a single row below, which also repairs databases that
+        # already accumulated several rows.
+        async with self._db.execute("SELECT MAX(version) AS version FROM schema_version") as cur:
             row = await cur.fetchone()
-        current_version = row["version"] if row else 0
+        current_version = (row["version"] if row else None) or 0
 
         if current_version < 1:
             await self._db.execute(CREATE_AUCTION_CACHE)
@@ -83,8 +87,18 @@ class Database:
             # matching filter, so wipe and require re-add via the UI.
             await self._db.execute("DELETE FROM user_added_realms")
 
+        if current_version < 4:
+            # bcc rows are no longer read: /v2/status returns the account's own
+            # Progression realms, so they are not filtered against this table.
+            # Existing rows also stored the bare region ("EU") instead of the
+            # API's ("BCC-EU"), which skipped every Progression realm. Drop only
+            # the bcc rows; classic and anniversary entries are correct and
+            # re-adding them by hand is a nuisance. See issue #19.
+            await self._db.execute("DELETE FROM user_added_realms WHERE game_version='bcc'")
+
+        await self._db.execute("DELETE FROM schema_version")
         await self._db.execute(
-            "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+            "INSERT INTO schema_version (version) VALUES (?)",
             (SCHEMA_VERSION,),
         )
         await self._db.commit()
