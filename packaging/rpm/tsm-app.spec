@@ -1,5 +1,5 @@
 Name:           tsm-app
-Version:        1.1.13
+Version:        1.1.14
 Release:        1%{?dist}
 Summary:        TradeSkillMaster Desktop App for Linux
 
@@ -72,6 +72,23 @@ ep.write_text(''.join(lines))
 /usr/lib/tsm-app/
 
 %changelog
+* Thu Aug 27 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.14-1
+- Fix: adding or removing a Classic Era or Anniversary realm did nothing or crashed
+  a worker; realms2/add and realms2/remove only exist for Retail and Progression,
+  and user_added_realms is the only filter for the catalogue game versions
+- Fix: removing a Retail or Progression realm sent the prefixed region ("BCC-EU");
+  the endpoint wants the bare code ("EU")
+- Fix: a refused removal now shows a message and restores the row instead of
+  raising in a worker thread
+- Change: Realm Data grouped by game version, one collapsible group each, matching
+  the Addon Versions tab; the region is a bold header carrying its own AuctionDB
+  status and timestamp with its realms listed beneath it
+- Change: realm names no longer repeat their region; region rows lose the delete
+  button that only answered "Regions cannot be removed."
+- Change: added-realm filter logs counts at INFO and names at DEBUG
+- Chore: collapsible group extracted to tsm/ui/components/collapsible_group.py and
+  shared by both grouped tabs; realm ordering moved to views/realm_grouping.py
+
 * Thu Aug 27 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.13-1
 - Fix: Progression (bcc) realms never synced; /v2/status is already account-scoped
   for retail and bcc, so the added-realm filter that narrows the Classic Era and

@@ -8,6 +8,8 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import QComboBox, QPushButton, QTableWidget, QTableWidgetItem
 
+from tsm.ui.views.realm_grouping import GV_LABEL_MAP
+
 
 def populate_combo(combo: QComboBox, items: list[str]) -> None:
     """Clear and repopulate *combo* without firing currentIndexChanged signals."""
@@ -29,6 +31,18 @@ def set_table_cell(
     table.setItem(row, col, item)
 
 
+def table_content_height(table: QTableWidget, row_count: int) -> int:
+    """Exact pixel height a table needs to show row_count rows with no scrollbar.
+
+    Used to size tables nested inside a CollapsibleGroup, which animates the
+    body between zero and this height.
+    """
+    header_h = table.horizontalHeader().sizeHint().height()
+    if header_h < 1:
+        header_h = 28  # sizeHint is unreliable before the first show
+    return header_h + row_count * table.verticalHeader().defaultSectionSize()
+
+
 def start_rate_limit_countdown(
     button: QPushButton,
     label: str,
@@ -45,12 +59,9 @@ def start_rate_limit_countdown(
         button.setText(label)
 
 
-_GV_LABEL_MAP: dict[str, tuple[str, str]] = {
-    "retail": ("Retail", "retail"),
-    "bcc": ("Progression", "bcc"),
-    "classic": ("Classic Era", "classic"),
-    "anniversary": ("Anniversary", "anniversary"),
-}
+# Single source of truth lives in realm_grouping so the Realm Data group headers
+# and this dropdown always agree.
+_GV_LABEL_MAP = GV_LABEL_MAP
 
 # Status endpoint keys that provide realm lists for game versions not covered
 # by the realms2/list endpoint.  Maps status key -> (gv_label, api_gv).

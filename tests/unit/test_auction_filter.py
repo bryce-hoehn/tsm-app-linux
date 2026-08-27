@@ -57,12 +57,16 @@ class _AddonWriter:
 class _Cache:
     user_realms: dict[str, set[tuple[str, str]]] = field(default_factory=dict)
     added: list[tuple[str, str, str]] = field(default_factory=list)
+    removed: list[tuple[str, str, str]] = field(default_factory=list)
 
     async def get_user_realms(self, game_version: str) -> set[tuple[str, str]]:
         return self.user_realms.get(game_version, set())
 
     async def add_user_realm(self, game_version: str, region: str, name: str) -> None:
         self.added.append((game_version, region, name))
+
+    async def remove_user_realm(self, game_version: str, region: str, name: str) -> None:
+        self.removed.append((game_version, region, name))
 
     async def save_snapshot(self, statuses) -> None:
         return None
@@ -75,6 +79,7 @@ class _Client:
         self._status = status
         self.downloaded: list[str] = []
         self.added_realms: list[tuple[str, int]] = []
+        self.removed_realms: list[tuple[str, str, str]] = []
         outer = self
 
         class _Status:
@@ -85,6 +90,10 @@ class _Client:
             async def add(self, game_version: str, realm_id: int):
                 outer.added_realms.append((game_version, realm_id))
                 return {}
+
+            async def remove(self, game_version: str, region: str, realm: str):
+                outer.removed_realms.append((game_version, region, realm))
+                return {"success": True}
 
         self.status = _Status()
         self.realms = _Realms()
@@ -167,26 +176,6 @@ async def test_anniversary_skips_entirely_when_nothing_was_added(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_filtered_out_realms_are_logged(tmp_path, caplog):
-    """A silent skip is what hid issue #19; the drop must leave a trace."""
-    status = {
-        "extraClassicRealms": [
-            _realm("Everlook-Horde", "Classic-EU"),
-            _realm("Mirage Raceway-Horde", "Classic-EU"),
-        ]
-    }
-    cache = _Cache(user_realms={"classic": {("Classic-EU", "Everlook-Horde")}})
-    svc, _ = _service(tmp_path, status, cache)
-
-    with caplog.at_level("INFO", logger="tsm.core.services.auction"):
-        await svc.refresh_all_realms()
-
-    assert "1 realm(s) not in the added-realm list" in caplog.text
-    assert "Classic-EU-Mirage Raceway-Horde" in caplog.text
-    assert "Everlook-Horde" not in caplog.text.split("not in the added-realm list")[1]
-
-
-@pytest.mark.asyncio
 async def test_add_realm_stores_catalogue_game_versions_only(tmp_path):
     svc, client = _service(tmp_path, {})
     cache = svc._cache
@@ -200,5 +189,101 @@ async def test_add_realm_stores_catalogue_game_versions_only(tmp_path):
         ("classic", "HC-EU", "Skull Rock-Alliance"),
         ("anniversary", "Fresh-US", "Maladath (AU)-Alliance"),
     ]
-    # every realm still reaches the API, only the local table is selective
-    assert client.added_realms == [("bcc", 106), ("classic", 477), ("anniversary", 551)]
+    # Only bcc is registered server side. realms2/add answers "Internal error.
+    # Contact support." for the catalogue game versions, and registering them
+    # would not affect what syncs.
+    assert client.added_realms == [("bcc", 106)]
+
+
+@pytest.mark.asyncio
+async def test_remove_catalogue_realm_is_local_only(tmp_path):
+    """Classic Era and Anniversary are filtered locally, so no API call is right.
+
+    realms2/remove answers "Invalid request." for them and changes nothing, since
+    /v2/status returns the whole catalogue regardless of what is registered.
+    """
+    svc, client = _service(tmp_path, {})
+    cache = svc._cache
+
+    await svc.remove_realm("classic", "HC-EU", "Soulseeker-Alliance")
+    await svc.remove_realm("anniversary", "Fresh-EU", "Thunderstrike-Alliance")
+
+    assert client.removed_realms == []
+    assert cache.removed == [
+        ("classic", "HC-EU", "Soulseeker-Alliance"),
+        ("anniversary", "Fresh-EU", "Thunderstrike-Alliance"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_remove_progression_realm_sends_the_bare_region(tmp_path):
+    """Verified live 2026-08-27: bcc/EU/<realm> succeeds, bcc/BCC-EU/<realm> does not."""
+    svc, client = _service(tmp_path, {})
+
+    await svc.remove_realm("bcc", "BCC-EU", "Venoxis-Horde")
+
+    assert client.removed_realms == [("bcc", "EU", "Venoxis-Horde")]
+    assert svc._cache.removed == []  # bcc is not tracked locally
+
+
+@pytest.mark.asyncio
+async def test_remove_retail_realm_passes_the_region_through(tmp_path):
+    svc, client = _service(tmp_path, {})
+
+    await svc.remove_realm("retail", "EU", "Tarren Mill")
+
+    assert client.removed_realms == [("retail", "EU", "Tarren Mill")]
+
+
+def test_bare_region_only_strips_a_game_version_prefix():
+    from tsm.core.services.auction import _bare_region
+
+    assert _bare_region("BCC-EU") == "EU"
+    assert _bare_region("EU") == "EU"
+    assert _bare_region("US") == "US"
+    # Never used on a user_added_realms key, where these three must stay distinct
+    assert _bare_region("HC-EU") == "EU"
+    assert _bare_region("SoD-EU") == "EU"
+
+
+@pytest.mark.asyncio
+async def test_skipped_realms_log_counts_at_info_and_names_at_debug(tmp_path, caplog):
+    """240 catalogue realms every five minutes must not dump names at INFO."""
+    status = {
+        "extraClassicRealms": [
+            _realm("Everlook-Horde", "Classic-EU"),
+            _realm("Mirage Raceway-Horde", "Classic-EU"),
+            _realm("Pyrewood Village-Horde", "Classic-EU"),
+        ]
+    }
+    cache = _Cache(user_realms={"classic": {("Classic-EU", "Everlook-Horde")}})
+    svc, _ = _service(tmp_path, status, cache)
+
+    with caplog.at_level("INFO", logger="tsm.core.services.auction"):
+        await svc.refresh_all_realms()
+    assert "_classic_era_: 2 of 3 realms not in the added-realm list" in caplog.text
+    assert "Mirage Raceway-Horde" not in caplog.text
+
+    caplog.clear()
+    with caplog.at_level("DEBUG", logger="tsm.core.services.auction"):
+        await svc.refresh_all_realms()
+    assert "Mirage Raceway-Horde" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_add_catalogue_realm_survives_an_api_that_refuses(tmp_path):
+    """Add Realm for Classic Era must not depend on realms2/add succeeding.
+
+    Before this, the API error propagated and the local row was never written,
+    so adding a Classic Era or Anniversary realm did nothing at all.
+    """
+    svc, client = _service(tmp_path, {})
+
+    async def boom(game_version: str, realm_id: int):
+        raise RuntimeError("Internal error. Contact support.")
+
+    client.realms.add = boom
+
+    await svc.add_realm("classic", 477, "HC-EU", "Skull Rock-Alliance")
+
+    assert svc._cache.added == [("classic", "HC-EU", "Skull Rock-Alliance")]

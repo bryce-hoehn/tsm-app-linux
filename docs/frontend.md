@@ -23,12 +23,34 @@ SettingsDialog (QDialog)      opened from status bar settings button
 
 | View                 | File                                | Key Signals In                                   | Key Signals Out                                                 |
 | -------------------- | ----------------------------------- | ------------------------------------------------ | --------------------------------------------------------------- |
-| RealmDataView        | views/realm_data.py (284 ln)        | `RealmViewModel.data_updated`, `loading_changed` | `RealmViewModel.refresh_all()`, `add_realm()`, `remove_realm()` |
-| AddonVersionsView    | views/addon_versions.py (552 ln)    | `RealmViewModel.addons_updated`                  | download/install/delete via `AsyncBridge`                       |
+| RealmDataView        | views/realm_data.py (350 ln)        | `RealmViewModel.data_updated`, `loading_changed` | `RealmViewModel.refresh_all()`, `add_realm()`, `remove_realm()` |
+| AddonVersionsView    | views/addon_versions.py (494 ln)    | `RealmViewModel.addons_updated`                  | download/install/delete via `AsyncBridge`                       |
 | BackupsView          | views/backups.py (276 ln)           | `AppViewModel.backup_notification`               | `stats_updated(str)`                                            |
 | AccountingExportView | views/accounting_export.py (848 ln) | `RealmViewModel.data_updated`                    | CSV export                                                      |
 | LoginView            | views/login.py (114 ln)             | (none)                                           | `login_successful`                                              |
 | SettingsDialog       | views/settings.py (357 ln)          | (none)                                           | `SettingsViewModel.saved`                                       |
+
+## Realm grouping (`views/realm_grouping.py`, 110 lines)
+
+Qt free so the ordering is unit testable without a `QApplication`.
+
+```python
+GV_ORDER      = ("retail", "classic", "bcc", "anniversary")
+GV_LABEL_MAP  = {"retail": ("Retail", "retail"), "bcc": ("Progression", "bcc"), ...}
+GV_LABELS     = {api_gv: label}
+group_summaries(summaries) → [(game_version, label, [RealmRow])]
+realm_count(rows) → int    # realms only, ignoring region headers
+```
+
+`RealmRow(summary, is_region, label, indent)` is one rendered line. Each region
+comes first at indent 0 labelled with its raw region string (`BCC-EU`), then its
+realms at indent 1 labelled with the bare realm name. A realm whose region is
+missing from the status response gets a synthesised region header rather than
+disappearing.
+
+`GV_LABEL_MAP` lives here rather than in `_utils.py` so the Add Realm dropdown
+and the Realm Data group headers cannot drift apart; `build_realm_tree()`
+imports it.
 
 ## ViewModels
 
@@ -69,7 +91,20 @@ tsm/ui/components/
                      settings_requested signal
   progress.py        ProgressWidget
   wow_tooltip.py     WoWTooltip
+  collapsible_group.py
+                     GroupHeader(label)      arrow + name + side label + summary,
+                                             clicked signal
+                     CollapsibleGroup(label, body)
+                                             header over a body that animates
+                                             between 0 and its content height.
+                                             Used by RealmDataView and
+                                             AddonVersionsView, one group per
+                                             WoW game version.
 ```
+
+Both grouped tabs size their nested table with `table_content_height()` and hand
+the result to `CollapsibleGroup.set_content_height()`, which expands the group on
+its first fill and then leaves the user's expand/collapse choice alone.
 
 ## UI Utilities (`views/_utils.py`, 77 lines)
 
@@ -78,6 +113,7 @@ set_table_cell(table, row, col, text, color=None)
 populate_combo(combo, items)          # blockSignals + clear + addItems
 start_rate_limit_countdown(btn, label, get_remaining)
 build_realm_tree(data) → dict[gv_label, dict[region, list[realm_dict]]]
+table_content_height(table, row_count) → int   # exact height, no scrollbar
 ```
 
 ## Log Viewer (`ui/views/log_viewer.py`)

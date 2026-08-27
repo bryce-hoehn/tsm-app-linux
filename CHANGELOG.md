@@ -4,6 +4,67 @@ All notable changes to tsm-app-linux are documented here.
 
 ---
 
+## [1.1.14] - 2026-08-27
+
+### Fixed
+
+- **Adding or removing a Classic Era or Anniversary realm did nothing, or
+  crashed.** Both call `realms2/add` / `realms2/remove`, which only exist for
+  Retail and Progression: `/v2/status` returns the account's own realms for those
+  two and the full catalogue for the others, so `user_added_realms` is the only
+  thing deciding what syncs. The server answers `Invalid request.` and
+  `Internal error. Contact support.` for the catalogue game versions. Until
+  v1.1.12 those errors were swallowed and the local row was written anyway; once
+  v1.1.12 started raising them, removal crashed a worker with no message and
+  adding stopped writing the row at all. Both paths now skip the pointless API
+  call and go straight to the local table.
+- **Removing a Retail or Progression realm sent the wrong region.** The region
+  went out in its prefixed form (`BCC-EU`), which the endpoint rejects; it wants
+  the bare code (`EU`). Verified against the live endpoint on 2026-08-27:
+  `realms2/remove/bcc/EU/<realm>` deregisters the realm, `bcc/BCC-EU/<realm>`
+  does not. The prefix is stripped for this API argument only, never for a
+  `user_added_realms` key, where `Classic-EU`, `HC-EU` and `SoD-EU` are distinct.
+- **A refused removal now tells you.** It surfaced only as an unhandled
+  exception in a worker thread while the row stayed hidden by the optimistic
+  update, so the realm reappeared unexplained at the next sync. The tab now shows
+  "Failed to remove realm. Please try again later." and restores the row.
+
+### Changed
+
+- **Realm Data is now grouped by game version.** The tab was a single flat table
+  mixing every region and realm across all four game versions in one list. It now
+  shows one collapsible group per game version, matching the Addon Versions tab.
+  Inside each group the region comes first as a bold header carrying its own
+  AuctionDB status and timestamp, with its realms listed beneath it, so it is
+  clear which region a realm draws its data from. Groups expand on first load and
+  keep whatever expand/collapse state you leave them in across a sync.
+- **Realm names no longer repeat their region.** A Progression realm read
+  `Progression-EU-Everlook-Horde` while its own region row read `BCC-EU`, two
+  spellings of the same region in one column. Realms now show the bare name under
+  the region header. The full name is unchanged in the removal confirmation
+  dialog and in the stored snapshot.
+- **Region rows no longer show a delete button.** It only ever answered "Regions
+  cannot be removed."
+
+### Chore
+
+- The collapsible group header and its expand/collapse animation moved out of
+  `addon_versions.py` into `tsm/ui/components/collapsible_group.py`, shared by
+  both grouped tabs. `addon_versions.py` drops from 552 to 494 lines and keeps
+  its existing appearance and QSS.
+- Realm ordering lives in `tsm/ui/views/realm_grouping.py`, kept free of Qt so it
+  is unit testable without a `QApplication`. The game version label map moved
+  there as the single source of truth for both the Add Realm dropdown and the new
+  group headers.
+- `RealmViewModel.remove_local()` takes the summary instead of a row index; a
+  table row number no longer maps onto the flat list now that rows are grouped
+  across several tables.
+- The added-realm filter logs counts at INFO and realm names at DEBUG. For the
+  catalogue game versions it was naming most of 240 realms on every five minute
+  sync.
+
+---
+
 ## [1.1.13] - 2026-08-27
 
 ### Fixed
