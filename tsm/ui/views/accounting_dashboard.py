@@ -25,35 +25,17 @@ from tsm.core.services.icon_cache import IconCache
 from tsm.core.services.item_cache import ItemCache
 from tsm.ui.components.gold_chart import GoldChart, RangeSelector
 from tsm.ui.components.item_icon import item_icon_pixmap
+from tsm.ui.views._accounting_format import (
+    POSITIVE,
+    icon_slug_for_non_item,
+    money_html,
+)
 from tsm.ui.views._accounting_stats import AccountingStats, ItemTotals
 
-_GOLD = "#ffd100"
-_SILVER = "#c7c7c7"
-_COPPER = "#cd7f32"
-_POSITIVE = "#4caf50"
-_NEGATIVE = "#f44336"
 _MUTED = "#8a8a8a"
 _DIM = "#666666"
 
 ITEM_COL = 1  # the name column, where the hover filter looks for an item id
-# Non-item rows (Repair Bill, Postage, ...) carry no item id and so no icon
-# slug. Map the types TSM records to a fitting WoW icon, fetched through the
-# same cache as real items. Keys are matched case-insensitively.
-_NON_ITEM_ICONS: dict[str, str] = {
-    "repair bill": "trade_blacksmithing",
-    "postage": "inv_letter_15",
-    "money transfer": "inv_misc_coin_02",
-    "mail": "inv_letter_15",
-    "trade": "inv_misc_gift_01",
-    "vendor": "inv_misc_bag_10",
-    "merchant": "inv_misc_bag_10",
-    "auction": "inv_misc_coin_17",
-    "auction deposit": "inv_misc_coin_17",
-    "transfer": "inv_misc_coin_02",
-    "guild bank": "achievement_guildperk_mobilebanking",
-}
-# Anything else without an item id still gets a frame with something in it.
-_UNKNOWN_ICON = "inv_misc_questionmark"
 # Non-items are not loot, so they have no quality. Grey, like a poor item.
 _NON_ITEM_QUALITY = 0
 
@@ -63,24 +45,6 @@ _ROW_HEIGHT = 40
 # width. Fits "1,071,848g 69s 68c" plus padding.
 _MONEY_COL_WIDTH = 170
 _CHART_CARD_HEIGHT = 230
-
-
-def money_html(copper: int, signed: bool = False, tint: bool = False) -> str:
-    """Gold/silver/copper split with each unit in its own colour.
-
-    *tint* colours the amount by sign, which is what the profit column wants.
-    """
-    negative = copper < 0
-    magnitude = abs(copper)
-    gold, silver, copper_rest = magnitude // 10000, magnitude // 100 % 100, magnitude % 100
-
-    sign = "-" if negative else ("+" if signed and magnitude else "")
-    amount_color = (_NEGATIVE if negative else _POSITIVE) if tint else _GOLD
-    return (
-        f'<span style="color:{amount_color}">{sign}{gold:,}g</span> '
-        f'<span style="color:{_SILVER}">{silver:02d}s</span> '
-        f'<span style="color:{_COPPER}">{copper_rest:02d}c</span>'
-    )
 
 
 def _rich(text: str, align_right: bool = False) -> QLabel:
@@ -98,11 +62,6 @@ def _caption(text: str) -> QLabel:
         f"color: {_MUTED}; font-size: 10px; font-weight: bold; background: transparent;"
     )
     return label
-
-
-def icon_slug_for_non_item(name: str) -> str:
-    """Placeholder icon slug for a transaction type that is not an item."""
-    return _NON_ITEM_ICONS.get(name.strip().lower(), _UNKNOWN_ICON)
 
 
 def _name_widget(name: str, item_id: str) -> QWidget:
@@ -320,7 +279,7 @@ class AccountingDashboard(QWidget):
     def _item_link(self, item_id: str) -> str:
         if not item_id:
             return f'<span style="color:{_DIM}">-</span>'
-        return f'<span style="color:{_POSITIVE}">{self._item_name(item_id)}</span>'
+        return f'<span style="color:{POSITIVE}">{self._item_name(item_id)}</span>'
 
     def _fill_items(self, items: list[ItemTotals]) -> None:
         self._items_caption.setText(f"ITEMS SOLD AND BOUGHT  ({len(items):,})")
