@@ -4,6 +4,52 @@ All notable changes to tsm-app-linux are documented here.
 
 ---
 
+## [1.1.15] - 2026-08-27
+
+### Added
+
+- **The Accounting tab is now a dashboard.** It opened as a filter form over a
+  paginated transaction list, which showed what happened but not how you were
+  doing. It now leads with the answer:
+  - **Player gold over time**, drawn from the TSM addon's per-character
+    `goldLog`, with a hover crosshair reading out the exact balance and moment
+    under the cursor, and 1D / 1W / 1M / 3M / 6M / 1Y / 2Y / All range buttons.
+    Each character records only its own balance at its own irregular times, so
+    the total forward fills every character to each logged moment rather than
+    summing raw rows, and a character counts for nothing before its first entry.
+  - **Headline figures**: high, low, daily sales, daily purchases, top sale and
+    top purchase.
+  - **Sales, Expenses and Profit panels**, each with a total, a per-day average
+    and the leading item.
+  - **Items sold and bought**, every traded item with its icon framed in its
+    quality colour, its item id, and earned / spent / profit columns. Hovering a
+    row still opens the full WoW item tooltip.
+- Item icons are fetched from the Wowhead CDN and cached on disk beside the
+  existing item cache, so they load once and then appear instantly. A missing
+  icon falls back to an empty quality-coloured frame, which is also what an
+  offline run shows.
+- Transaction types that are not items, such as Repair Bill, Postage and Money
+  Transfer, get a fitting stand-in icon rather than an empty frame. A type not
+  in the list still gets a generic one, so a future TSM addition cannot leave a
+  blank row.
+
+### Changed
+
+- The account and realm selectors are joined by a **character** selector, which
+  narrows both the gold chart and every figure. Warbank and guild gold are
+  counted only under "All characters", since they belong to no one character.
+- The From/To date pickers, the type checkboxes, the totals bar and the paginated
+  transaction preview are gone: the range buttons and the character selector now
+  cover that ground without two competing sets of filters. **Export to CSV is
+  kept** and follows the current range and character.
+- Money is shown as a gold/silver/copper split with each unit in its own colour,
+  matching the item tooltip.
+- The window opens at 1280x860 and no longer shrinks below 1000x720. The old
+  740x600 minimum predates the dashboard and could not fit the chart, the six
+  headline figures and the three money panels side by side.
+
+---
+
 ## [1.1.14] - 2026-08-27
 
 ### Fixed

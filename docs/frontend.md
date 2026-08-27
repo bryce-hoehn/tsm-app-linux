@@ -26,7 +26,7 @@ SettingsDialog (QDialog)      opened from status bar settings button
 | RealmDataView        | views/realm_data.py (350 ln)        | `RealmViewModel.data_updated`, `loading_changed` | `RealmViewModel.refresh_all()`, `add_realm()`, `remove_realm()` |
 | AddonVersionsView    | views/addon_versions.py (494 ln)    | `RealmViewModel.addons_updated`                  | download/install/delete via `AsyncBridge`                       |
 | BackupsView          | views/backups.py (276 ln)           | `AppViewModel.backup_notification`               | `stats_updated(str)`                                            |
-| AccountingExportView | views/accounting_export.py (848 ln) | `RealmViewModel.data_updated`                    | CSV export                                                      |
+| AccountingExportView | views/accounting_export.py (516 ln) | (none, reads SavedVariables directly)            | CSV export                                                      |
 | LoginView            | views/login.py (114 ln)             | (none)                                           | `login_successful`                                              |
 | SettingsDialog       | views/settings.py (357 ln)          | (none)                                           | `SettingsViewModel.saved`                                       |
 
@@ -51,6 +51,42 @@ disappearing.
 `GV_LABEL_MAP` lives here rather than in `_utils.py` so the Add Realm dropdown
 and the Realm Data group headers cannot drift apart; `build_realm_tree()`
 imports it.
+
+## Accounting dashboard
+
+```
+views/_accounting_stats.py    Qt free aggregation, unit testable
+    parse_gold_log(csv)          -> [GoldPoint]      "minute,copper", minute = unix/60
+    merge_gold_logs([[GoldPoint]]) -> [GoldPoint]    forward fill per character, then sum
+    collect_gold_logs(db, realm, character_filter)
+    characters_for_realm(db, realm)
+    build_stats(rows, series, start_ts, end_ts) -> AccountingStats
+
+views/accounting_dashboard.py  rendering only
+    AccountingDashboard(item_cache, icon_cache)
+        range_changed(days | None)
+        set_stats(AccountingStats)
+        table                    ITEM_COL carries the item id for the tooltip filter
+    money_html(copper, signed, tint)  gold/silver/copper split, each unit coloured
+
+components/gold_chart.py       GoldChart (QPainter area plot, crosshair on hover)
+                               RangeSelector (1D .. All)
+components/item_icon.py        item_icon_pixmap(path, quality, size)
+                               icon_slug_for_non_item(name) in the dashboard maps
+                               Repair Bill / Postage / Money Transfer and friends
+                               to a stand-in slug, generic for unknown types
+core/services/icon_cache.py    IconCache, mirrors ItemCache for wow.zamimg.com icons
+```
+
+Each character logs only its own balance, at its own irregular times, so total
+gold is not a sum of raw rows: `merge_gold_logs` forward fills each character to
+every timestamp any of them logged, and a character contributes nothing before
+its first entry. Warbank and guild logs belong to no character, so they count
+only when no character filter is active.
+
+Range buttons cut from **now**, not from the newest row: anchoring on the data
+would make "1D" mean "the last day that happens to have data", so an account
+idle for months would still show a busy day.
 
 ## ViewModels
 

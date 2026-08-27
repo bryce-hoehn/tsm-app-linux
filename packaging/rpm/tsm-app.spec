@@ -1,5 +1,5 @@
 Name:           tsm-app
-Version:        1.1.14
+Version:        1.1.15
 Release:        1%{?dist}
 Summary:        TradeSkillMaster Desktop App for Linux
 
@@ -72,6 +72,19 @@ ep.write_text(''.join(lines))
 /usr/lib/tsm-app/
 
 %changelog
+* Thu Aug 27 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.15-1
+- Add: Accounting rebuilt as a dashboard: player gold over time with a hover
+  crosshair and 1D..All ranges, headline figures, Sales/Expenses/Profit panels,
+  and every item sold or bought with quality-framed icons and item ids
+- Add: item icons fetched from the Wowhead CDN and cached on disk
+- Change: a character selector narrows the chart and every figure; warbank and
+  guild gold count only under "All characters"
+- Change: the date pickers, type checkboxes, totals bar and transaction preview
+  are removed; Export to CSV is kept and follows the current selection
+- Change: money is shown as a gold/silver/copper split, matching the tooltip
+- Change: non-item rows (Repair Bill, Postage, Money Transfer) get a stand-in icon
+- Change: window opens at 1280x860 with a 1000x720 minimum, up from 740x600
+
 * Thu Aug 27 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.14-1
 - Fix: adding or removing a Classic Era or Anniversary realm did nothing or crashed
   a worker; realms2/add and realms2/remove only exist for Retail and Progression,

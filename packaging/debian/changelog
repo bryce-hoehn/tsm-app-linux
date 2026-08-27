@@ -1,3 +1,28 @@
+tsm-app (1.1.15-1) stable; urgency=medium
+
+  * Add: the Accounting tab is now a dashboard. Player gold over time from the
+    addon's per-character goldLog, with a hover crosshair and 1D/1W/1M/3M/6M/
+    1Y/2Y/All ranges; headline figures (high, low, daily sales and purchases,
+    top sale and purchase); Sales, Expenses and Profit panels with totals,
+    per-day averages and leading items; and every item sold or bought with its
+    icon framed in its quality colour, its item id, and earned/spent/profit.
+  * Add: item icons are fetched from the Wowhead CDN and cached on disk beside
+    the existing item cache; a missing icon falls back to an empty frame.
+  * Change: a character selector joins account and realm and narrows both the
+    chart and every figure. Warbank and guild gold count only under
+    "All characters".
+  * Change: the From/To pickers, type checkboxes, totals bar and paginated
+    transaction preview are removed; the range buttons and character selector
+    replace them. Export to CSV is kept and follows the current selection.
+  * Change: money is shown as a gold/silver/copper split with each unit in its
+    own colour, matching the item tooltip.
+  * Change: non-item rows (Repair Bill, Postage, Money Transfer) get a stand-in
+    icon instead of an empty frame; unknown types get a generic one.
+  * Change: the window opens at 1280x860 with a 1000x720 minimum; the old
+    740x600 could not fit the dashboard.
+
+ -- tsm-app <noreply@tsm-app>  Thu, 27 Aug 2026 00:00:00 +0000
+
 tsm-app (1.1.14-1) stable; urgency=medium
 
   * Fix: adding or removing a Classic Era or Anniversary realm did nothing, or
