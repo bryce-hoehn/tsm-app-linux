@@ -20,6 +20,10 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from tsm.workers.jobs import job_auction_refresh, job_auth_refresh, job_backup, job_check_update
 
+# Must stay comfortably below the server's session lifetime, which is roughly
+# 10 minutes. See the auth_refresh schedule below.
+AUTH_REFRESH_MINUTES = 5
+
 logger = logging.getLogger(__name__)
 
 
@@ -142,9 +146,17 @@ class JobScheduler:
                         id="backup",
                         kwargs={"services": svc},
                     )
+                # Auth: the TSM session is rejected about 10 minutes after
+                # login (measured 2026-08-27: alive at 9m07s, rejected at
+                # 10m07s). Refresh well inside that window. The API client also
+                # re-authenticates on a rejected request, so a session that
+                # lapses between runs of this job still recovers.
                 await scheduler.add_schedule(
                     job_auth_refresh,
-                    IntervalTrigger(minutes=25, start_time=now + timedelta(minutes=25)),
+                    IntervalTrigger(
+                        minutes=AUTH_REFRESH_MINUTES,
+                        start_time=now + timedelta(minutes=AUTH_REFRESH_MINUTES),
+                    ),
                     id="auth_refresh",
                     kwargs={"services": svc},
                 )

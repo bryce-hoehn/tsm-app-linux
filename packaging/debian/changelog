@@ -1,3 +1,23 @@
+tsm-app (1.1.12-1) stable; urgency=medium
+
+  * Fix: addon download failing with "Invalid request." and never recovering.
+    The TSM server now rejects a session about 10 minutes after login, while
+    the auth refresh job ran every 25 minutes. The refresh interval is now
+    5 minutes, and a rejected request re-authenticates once and retries, so a
+    lapsed session recovers without restarting the app.
+  * Fix: API error envelopes {success: false, error: ...} were swallowed on
+    every endpoint except the addon download; a status call with a dead session
+    looked like a successful empty response and the sync silently stalled.
+    api_request() now raises TSMApiError.
+  * Fix: the addon download no longer sends a tsm_version query parameter; the
+    original client sends it on /v2/status only, carrying the installed
+    TradeSkillMaster addon version.
+  * Fix: each WoW client now receives its own package; the game-version suffix
+    was stripped before the request, so the retail build was installed into
+    _classic_era_, _classic_ and _anniversary_ too.
+
+ -- tsm-app <noreply@tsm-app>  Thu, 27 Aug 2026 00:00:00 +0000
+
 tsm-app (1.1.11-1) stable; urgency=medium
 
   * Fix: auto-detect WoW installed via Steam Proton (compatdata prefixes);
@@ -48,7 +68,7 @@ tsm-app (1.1.8-1) stable; urgency=medium
     realm IDs stored in local DB on Add Realm and included in the allow-set
     alongside active-character realms from SavedVariables.
 
- -- tsm-app <noreply@tsm-app>  Sat, 10 May 2026 00:00:00 +0000
+ -- tsm-app <noreply@tsm-app>  Sun, 10 May 2026 00:00:00 +0000
 
 tsm-app (1.1.7-1) stable; urgency=medium
 
@@ -59,7 +79,7 @@ tsm-app (1.1.7-1) stable; urgency=medium
     in the .deb package; app icon now appears in desktop launchers and task
     switchers, matching the .rpm behavior.
 
- -- tsm-app <noreply@tsm-app>  Sat, 03 May 2026 00:00:00 +0000
+ -- tsm-app <noreply@tsm-app>  Sun, 03 May 2026 00:00:00 +0000
 
 tsm-app (1.1.6-1) stable; urgency=medium
 
@@ -79,7 +99,7 @@ tsm-app (1.1.6-1) stable; urgency=medium
     path; the previous pip-generated wrapper used /usr/bin/python (absent on
     Ubuntu 26.04) and a Python-version-pinned dist-packages directory.
 
- -- tsm-app <noreply@tsm-app>  Tue, 22 Apr 2026 00:00:00 +0000
+ -- tsm-app <noreply@tsm-app>  Wed, 22 Apr 2026 00:00:00 +0000
 
 tsm-app (1.1.5-1) stable; urgency=medium
 
@@ -92,7 +112,7 @@ tsm-app (1.1.5-1) stable; urgency=medium
   * Add: Addon Versions tab group headers now show WoW installation status
     (installed/not installed) per game version as a grey label.
 
- -- tsm-app <noreply@tsm-app>  Fri, 04 Apr 2026 00:00:00 +0000
+ -- tsm-app <noreply@tsm-app>  Sat, 04 Apr 2026 00:00:00 +0000
 
 tsm-app (1.1.4-1) stable; urgency=medium
 

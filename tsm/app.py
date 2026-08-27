@@ -100,6 +100,9 @@ def create_app(
     # API + Services
     api_client = TSMApiClient()
     auth_svc = AuthService(api_client)
+    # Recover in place when the server rejects the session: a fresh login also
+    # refreshes endpointSubdomains, which is handed out per session.
+    api_client.set_reauth_callback(auth_svc.refresh_token)
     wow_detector = WoWDetectorService(skip_scan=skip_detection)
     addon_writer = AddonWriterService(wow_detector)
     auction_svc = AuctionDataService(api_client, cache, addon_writer)

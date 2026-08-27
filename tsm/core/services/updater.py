@@ -5,10 +5,13 @@ Original behaviour (from MainThread.pyc + WoWHelper.pyc):
 - Each entry: {name: str, version_str: str}  (base name, no suffix)
 - Empty version_str → delete that addon from all game version dirs
 - Dev versions (@project-version@) are never auto-updated
-- Download: GET /v2/addon/{base_name}?channel=...&tsm_version=...  → zip bytes
+- Download: GET /v2/addon/{name}?channel=...  → zip bytes
+- `name` keeps the game-version suffix ("", "-Classic", "-Progression",
+  "-Anniversary"); the server resolves it to that client's package.
+  No tsm_version parameter: the original sends that only on /v2/status.
 - Zip contains base_name/ as top-level folder
 - Install: rmtree existing folder, extractall into AddOns dir
-- One download per base addon; installed into every game version dir where it exists
+- One download per game version, installed only into that game version's dir
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ _SUFFIX_TO_GV: dict[str, str] = {
     "-Anniversary": "_anniversary_",
 }
 _SUFFIXES_BY_LENGTH = sorted(_SUFFIX_TO_GV, key=len, reverse=True)
+_GV_TO_SUFFIX: dict[str, str] = {gv: suffix for suffix, gv in _SUFFIX_TO_GV.items()}
 
 
 def _addon_suffix(name: str) -> str:
@@ -111,25 +115,47 @@ class UpdateService:
                 return True
         return False
 
-    async def _download_and_install(self, base_name: str, latest: str, installs) -> bool:
-        """Download zip for base_name and install into every game version dir
-        where the addon folder already exists."""
+    async def _fetch_addon_zip(
+        self, api_name: str, cache: dict[str, ZipFile | None]
+    ) -> ZipFile | None:
+        """Download and open api_name once per call, memoized in cache.
+
+        Failures are cached as None so a package the server does not serve is
+        requested once, not once per WoW install.
+        """
+        if api_name in cache:
+            return cache[api_name]
+
         assert self._client is not None
-        logger.info("Downloading addon %s %s", base_name, latest)
+        logger.info("Downloading addon %s", api_name)
         try:
-            zip_bytes = await self._client.addon.download(base_name, tsm_version=latest)
+            zip_bytes = await self._client.addon.download(api_name)
         except Exception:
-            logger.exception("Failed to download addon %s", base_name)
-            return False
+            logger.exception("Failed to download addon %s", api_name)
+            cache[api_name] = None
+            return None
 
         try:
             zf = ZipFile(BytesIO(zip_bytes))
         except BadZipFile:
-            logger.error("Downloaded file for %s is not a valid zip", base_name)
-            return False
+            logger.error("Downloaded file for %s is not a valid zip", api_name)
+            cache[api_name] = None
+            return None
 
+        cache[api_name] = zf
+        return zf
+
+    async def _download_and_install(self, base_name: str, latest: str, installs) -> bool:
+        """Install base_name into every game version dir where it already exists.
+
+        Each game version gets the package built for it: the API name carries the
+        suffix for that client, so _classic_ pulls "<base>-Progression" and not
+        the retail build.
+        """
+        assert self._client is not None
+        zips: dict[str, ZipFile | None] = {}
         installed_any = False
-        with zf:
+        try:
             for wow_root, gv_dir in iter_wow_gv_roots(installs):
                 addons_dir = _find_addons_dir(wow_root / gv_dir)
                 if addons_dir is None:
@@ -137,13 +163,21 @@ class UpdateService:
                 addon_dir = addons_dir / base_name
                 if not addon_dir.exists():
                     continue  # only update where already installed
+
+                zf = await self._fetch_addon_zip(base_name + _GV_TO_SUFFIX.get(gv_dir, ""), zips)
+                if zf is None:
+                    continue
                 try:
                     shutil.rmtree(addon_dir)
                     safe_extractall(zf, addons_dir)
-                    logger.info("Installed %s v%s → %s", base_name, latest, addons_dir)
+                    logger.info("Installed %s %s -> %s", base_name, latest, addons_dir)
                     installed_any = True
                 except Exception:
                     logger.exception("Failed to install %s to %s", base_name, addons_dir)
+        finally:
+            for zf in zips.values():
+                if zf is not None:
+                    zf.close()
 
         return installed_any
 
@@ -164,11 +198,13 @@ class UpdateService:
         if not game_ver:
             return False
 
-        logger.info("Downloading %s %s for %s", base_name, version, game_ver)
+        # `name` still carries the game-version suffix: that is what the API
+        # expects, and it is what selects the package for this client.
+        logger.info("Downloading %s %s for %s", name, version, game_ver)
         try:
-            zip_bytes = await self._client.addon.download(base_name, tsm_version=version)
+            zip_bytes = await self._client.addon.download(name)
         except Exception:
-            logger.exception("Failed to download addon %s", base_name)
+            logger.exception("Failed to download addon %s", name)
             return False
 
         try:
@@ -197,7 +233,7 @@ class UpdateService:
                     if addon_dir.exists():
                         shutil.rmtree(addon_dir)
                     safe_extractall(zf, addons_dir)
-                    logger.info("Installed %s v%s -> %s", base_name, version, addons_dir)
+                    logger.info("Installed %s %s -> %s", base_name, version, addons_dir)
                     installed_any = True
                 except Exception:
                     logger.exception("Failed to install %s to %s", base_name, addons_dir)

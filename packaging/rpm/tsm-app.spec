@@ -1,5 +1,5 @@
 Name:           tsm-app
-Version:        1.1.11
+Version:        1.1.12
 Release:        1%{?dist}
 Summary:        TradeSkillMaster Desktop App for Linux
 
@@ -72,6 +72,17 @@ ep.write_text(''.join(lines))
 /usr/lib/tsm-app/
 
 %changelog
+* Thu Aug 27 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.12-1
+- Fix: addon download failing with "Invalid request." and never recovering; the
+  server now rejects a session ~10 min after login while auth refreshed every
+  25 min. Refresh is now every 5 min and a rejected request re-authenticates
+  once and retries
+- Fix: API error envelopes were swallowed on every endpoint except the addon
+  download; api_request() now raises TSMApiError for {success: false}
+- Fix: addon download no longer sends tsm_version; the original client sends it
+  on /v2/status only, carrying the installed TradeSkillMaster addon version
+- Fix: each WoW client now receives its own package instead of the retail build
+
 * Sat May 23 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.11-1
 - Fix: auto-detect WoW installed via Steam Proton; scan all compatdata/<appid>/pfx
   entries under ~/.local/share/Steam and ~/.steam/steam; previously only
@@ -94,20 +105,20 @@ ep.write_text(''.join(lines))
 - Fix: addon installation crash when TSM API returns JSON redirect instead of
   raw zip bytes; downloader follows redirect URL to CDN, backward compatible
 
-* Sat May 10 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.8-1
+* Sun May 10 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.8-1
 - Fix: Anniversary region parsing corrected - region code is the first segment
   for _anniversary_ (contributed by Korkd)
 - Fix: factionrealm scope parser handles un-indexed Anniversary SavedVariables entries
 - Fix: manually-added Classic Era / Anniversary realms now sync immediately; stored
   locally in SQLite on Add Realm, unioned with SavedVariables active-character set
 
-* Sat May 03 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.7-1
+* Sun May 03 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.7-1
 - Fix: restore strict Anniversary/Classic Era realm filter; skip game version
   entirely when no active characters found in SavedVariables instead of showing
   all 250+ API realms
 - Fix: install hicolor icons to system icon directories in .deb package
 
-* Tue Apr 22 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.6-1
+* Wed Apr 22 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.6-1
 - Add: Anniversary and Classic Era realms in Add Realm dropdown via status
   endpoint extraAnniversaryRealms/extraClassicRealms fields
 - Add: character filter relaxed for Anniversary/Classic Era when no active
@@ -116,7 +127,7 @@ ep.write_text(''.join(lines))
   with individual Qt module packages, bundle APScheduler 4.x/structlog/tomli-w,
   use python3 shebang and version-agnostic install path
 
-* Fri Apr 04 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.5-1
+* Sat Apr 04 2026 exceptionptr <https://github.com/exceptionptr> - 1.1.5-1
 - Fix: AppHelper folder name corrected for non-retail game versions; always
   TradeSkillMaster_AppHelper regardless of version, confirmed against Windows
   reference; eliminates false "AppHelper missing" for Classic/Era/Anniversary

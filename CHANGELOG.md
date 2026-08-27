@@ -4,6 +4,61 @@ All notable changes to tsm-app-linux are documented here.
 
 ---
 
+## [1.1.12] - 2026-08-27
+
+### Fixed
+
+- **Addon download fails with "Invalid request." and never recovers.**
+  The TSM server now rejects a session roughly 10 minutes after login (measured
+  2026-08-27: still accepted at 9m07s, rejected at 10m07s). The auth refresh job
+  ran every 25 minutes, so the session was dead for about 15 minutes out of every
+  25. `"Invalid request."` is the server's generic rejection, returned as HTTP 200
+  with `{"success": false, "error": ...}`, and nothing in the app recovered from
+  it: every retry reused the same dead session, so the only way out was a
+  restart. Two changes fix this: the auth refresh job now runs every 5 minutes,
+  and a rejected request re-authenticates once and retries, so a session that
+  lapses between refreshes recovers in place.
+- **API errors were silently swallowed on every endpoint except the addon
+  download.** `api_request()` returned the error envelope as if it were data, so a
+  `/v2/status` call with a dead session looked like a successful response with no
+  realms and no addons: the app rewrote its cached `AppData.lua`, logged nothing,
+  and quietly stopped picking up new auction data. The addon download was the one
+  place that checked the envelope, which is why that was the only visible symptom.
+  `api_request()` now raises `TSMApiError` for `{"success": false}` on every
+  endpoint, matching the original Windows client.
+- **The addon download no longer sends a `tsm_version` query parameter.**
+  The original client sends `tsm_version` on `/v2/status` only, where it carries
+  the version of the installed TradeSkillMaster addon. The app was sending the
+  version of the addon it was downloading, which is not what the parameter means.
+- **Each WoW client now receives the package built for it.**
+  The game-version suffix was stripped before the request, so one retail download
+  was installed into `_classic_era_`, `_classic_` and `_anniversary_` as well. The
+  suffixed name (`-Classic`, `-Progression`, `-Anniversary`) is now sent and each
+  package is installed only into its own game version directory.
+
+### Changed
+
+- Auth refresh interval reduced from 25 minutes to 5 minutes
+  (`AUTH_REFRESH_MINUTES` in `tsm/core/scheduler.py`), well inside the server's
+  session lifetime.
+- `TSMApiClient.api_request()` raises the new `TSMApiError` instead of returning
+  the error payload. Callers that treated an error envelope as data now see the
+  failure. `AddonAPI.download()` no longer raises `ValueError` for that case.
+- `AddonAPI.download(name, channel)` no longer accepts a `tsm_version` argument,
+  and `name` is expected to carry its game-version suffix.
+- When several requests are rejected at the same time, only the first
+  re-authenticates; the rest wait for it and retry against the new session.
+
+### Chore
+
+- `docs/api.md` corrected against the live API: session lifetime, the per-session
+  `endpointSubdomains` map (`addon` is served by `app-server4`/`app-server5`,
+  not the `app-server` that serves `status`), the `/v2/addon` contract, the error
+  envelope, and the status response shape (`appVersion` is not actually sent,
+  `version_str` carries a leading `v`, `addons-Classic` / `addons-BCC` exist).
+
+---
+
 ## [1.1.11] - 2026-05-23
 
 ### Fixed
