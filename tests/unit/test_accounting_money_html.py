@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tsm.ui.views.accounting_dashboard import money_html
+from tsm.ui.views._accounting_format import icon_slug_for_non_item, money_html
 
 _GOLD = "#ffd100"
 _POSITIVE = "#4caf50"
@@ -49,23 +49,17 @@ def test_zero_gets_no_sign():
 
 def test_known_non_item_types_get_a_fitting_icon():
     """Repair Bill and friends carry no item id, so they need a stand-in icon."""
-    from tsm.ui.views.accounting_dashboard import icon_slug_for_non_item
-
     assert icon_slug_for_non_item("Repair Bill") == "trade_blacksmithing"
     assert icon_slug_for_non_item("Postage") == "inv_letter_15"
     assert icon_slug_for_non_item("Money Transfer") == "inv_misc_coin_02"
 
 
 def test_non_item_lookup_ignores_case_and_padding():
-    from tsm.ui.views.accounting_dashboard import icon_slug_for_non_item
-
     assert icon_slug_for_non_item("  repair bill  ") == "trade_blacksmithing"
     assert icon_slug_for_non_item("MONEY TRANSFER") == "inv_misc_coin_02"
 
 
 def test_an_unknown_type_still_gets_an_icon():
     """A type TSM adds later must not leave an empty frame."""
-    from tsm.ui.views.accounting_dashboard import icon_slug_for_non_item
-
     assert icon_slug_for_non_item("Some Future Type") == "inv_misc_questionmark"
     assert icon_slug_for_non_item("") == "inv_misc_questionmark"

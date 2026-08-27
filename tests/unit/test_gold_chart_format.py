@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tsm.ui.components.gold_chart import RANGES, format_gold_full, format_gold_short
+from tsm.ui.components._gold_format import RANGES, format_gold_full, format_gold_short
 
 
 def test_short_format_switches_to_kilogold():
