@@ -77,8 +77,10 @@ class AppWindow(QMainWindow):
         from tsm import __version__
 
         self.setWindowTitle(f"TradeSkillMaster Application - v{__version__}")
-        self.setMinimumSize(740, 600)
-        self.resize(740, 600)
+        # The Accounting dashboard needs room for the chart, six headline
+        # figures across, three money panels and the item table.
+        self.setMinimumSize(1000, 720)
+        self.resize(1280, 860)
         self.setWindowIcon(_make_window_icon())
         self.setWindowFlags(
             Qt.WindowType.Window

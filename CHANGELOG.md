@@ -4,6 +4,207 @@ All notable changes to tsm-app-linux are documented here.
 
 ---
 
+## [1.1.15] - 2026-08-27
+
+### Added
+
+- **The Accounting tab is now a dashboard.** It opened as a filter form over a
+  paginated transaction list, which showed what happened but not how you were
+  doing. It now leads with the answer:
+  - **Player gold over time**, drawn from the TSM addon's per-character
+    `goldLog`, with a hover crosshair reading out the exact balance and moment
+    under the cursor, and 1D / 1W / 1M / 3M / 6M / 1Y / 2Y / All range buttons.
+    Each character records only its own balance at its own irregular times, so
+    the total forward fills every character to each logged moment rather than
+    summing raw rows, and a character counts for nothing before its first entry.
+  - **Headline figures**: high, low, daily sales, daily purchases, top sale and
+    top purchase.
+  - **Sales, Expenses and Profit panels**, each with a total, a per-day average
+    and the leading item.
+  - **Items sold and bought**, every traded item with its icon framed in its
+    quality colour, its item id, and earned / spent / profit columns. Hovering a
+    row still opens the full WoW item tooltip.
+- Item icons are fetched from the Wowhead CDN and cached on disk beside the
+  existing item cache, so they load once and then appear instantly. A missing
+  icon falls back to an empty quality-coloured frame, which is also what an
+  offline run shows.
+- Transaction types that are not items, such as Repair Bill, Postage and Money
+  Transfer, get a fitting stand-in icon rather than an empty frame. A type not
+  in the list still gets a generic one, so a future TSM addition cannot leave a
+  blank row.
+
+### Changed
+
+- The account and realm selectors are joined by a **character** selector, which
+  narrows both the gold chart and every figure. Warbank and guild gold are
+  counted only under "All characters", since they belong to no one character.
+- The From/To date pickers, the type checkboxes, the totals bar and the paginated
+  transaction preview are gone: the range buttons and the character selector now
+  cover that ground without two competing sets of filters. **Export to CSV is
+  kept** and follows the current range and character.
+- Money is shown as a gold/silver/copper split with each unit in its own colour,
+  matching the item tooltip.
+- The window opens at 1280x860 and no longer shrinks below 1000x720. The old
+  740x600 minimum predates the dashboard and could not fit the chart, the six
+  headline figures and the three money panels side by side.
+
+---
+
+## [1.1.14] - 2026-08-27
+
+### Fixed
+
+- **Adding or removing a Classic Era or Anniversary realm did nothing, or
+  crashed.** Both call `realms2/add` / `realms2/remove`, which only exist for
+  Retail and Progression: `/v2/status` returns the account's own realms for those
+  two and the full catalogue for the others, so `user_added_realms` is the only
+  thing deciding what syncs. The server answers `Invalid request.` and
+  `Internal error. Contact support.` for the catalogue game versions. Until
+  v1.1.12 those errors were swallowed and the local row was written anyway; once
+  v1.1.12 started raising them, removal crashed a worker with no message and
+  adding stopped writing the row at all. Both paths now skip the pointless API
+  call and go straight to the local table.
+- **Removing a Retail or Progression realm sent the wrong region.** The region
+  went out in its prefixed form (`BCC-EU`), which the endpoint rejects; it wants
+  the bare code (`EU`). Verified against the live endpoint on 2026-08-27:
+  `realms2/remove/bcc/EU/<realm>` deregisters the realm, `bcc/BCC-EU/<realm>`
+  does not. The prefix is stripped for this API argument only, never for a
+  `user_added_realms` key, where `Classic-EU`, `HC-EU` and `SoD-EU` are distinct.
+- **A refused removal now tells you.** It surfaced only as an unhandled
+  exception in a worker thread while the row stayed hidden by the optimistic
+  update, so the realm reappeared unexplained at the next sync. The tab now shows
+  "Failed to remove realm. Please try again later." and restores the row.
+
+### Changed
+
+- **Realm Data is now grouped by game version.** The tab was a single flat table
+  mixing every region and realm across all four game versions in one list. It now
+  shows one collapsible group per game version, matching the Addon Versions tab.
+  Inside each group the region comes first as a bold header carrying its own
+  AuctionDB status and timestamp, with its realms listed beneath it, so it is
+  clear which region a realm draws its data from. Groups expand on first load and
+  keep whatever expand/collapse state you leave them in across a sync.
+- **Realm names no longer repeat their region.** A Progression realm read
+  `Progression-EU-Everlook-Horde` while its own region row read `BCC-EU`, two
+  spellings of the same region in one column. Realms now show the bare name under
+  the region header. The full name is unchanged in the removal confirmation
+  dialog and in the stored snapshot.
+- **Region rows no longer show a delete button.** It only ever answered "Regions
+  cannot be removed."
+
+### Chore
+
+- The collapsible group header and its expand/collapse animation moved out of
+  `addon_versions.py` into `tsm/ui/components/collapsible_group.py`, shared by
+  both grouped tabs. `addon_versions.py` drops from 552 to 494 lines and keeps
+  its existing appearance and QSS.
+- Realm ordering lives in `tsm/ui/views/realm_grouping.py`, kept free of Qt so it
+  is unit testable without a `QApplication`. The game version label map moved
+  there as the single source of truth for both the Add Realm dropdown and the new
+  group headers.
+- `RealmViewModel.remove_local()` takes the summary instead of a row index; a
+  table row number no longer maps onto the flat list now that rows are grouped
+  across several tables.
+- The added-realm filter logs counts at INFO and realm names at DEBUG. For the
+  catalogue game versions it was naming most of 240 realms on every five minute
+  sync.
+
+---
+
+## [1.1.13] - 2026-08-27
+
+### Fixed
+
+- **Progression (bcc) realms never synced.** The app authenticated, polled the
+  status endpoint and rewrote `AppData.lua`, but skipped every Progression realm
+  before checking whether new data was available. No error and no log line, so
+  the UI showed "Up to date" while the data aged; one reported realm was 207 days
+  stale.
+
+  `/v2/status` returns the account's own registered realms under `realms`
+  (retail) and `realms-Progression` (bcc), but the **full catalogue** under
+  `extraClassicRealms` and `extraAnniversaryRealms`. The added-realm filter
+  exists to narrow those catalogues and was being applied to bcc as well, where
+  it matched a list keyed `BCC-EU` by the status endpoint against rows stored as
+  the bare `EU` taken from `realms2/list`. Nothing ever matched, so the whole
+  game version was dropped. Progression is no longer filtered, which fixes the
+  realm loop, the region loop and the stale removal key in one change. Thanks to
+  SimonMengele for the diagnosis and the reproduction. (#19)
+- **Schema version never advanced past the first migration.** `version` is the
+  `PRIMARY KEY` of `schema_version`, so `INSERT OR REPLACE` appended a second row
+  rather than replacing the old one, and the subsequent `SELECT` read the lowest
+  value back. Every migration guarded by a version above that value would have
+  re-run on each startup. The version is now read with `MAX()` and the table is
+  collapsed to a single row, which also repairs databases that already
+  accumulated rows.
+- **Realms dropped by the added-realm filter are now logged.** The silent
+  `continue` is what let the Progression outage go unnoticed for months. Each
+  sync now logs how many realms were filtered out and names the first few.
+
+### Changed
+
+- Progression (bcc) realms are no longer recorded in `user_added_realms`, since
+  the table is only consulted for the two catalogue game versions. A schema v4
+  migration deletes leftover `bcc` rows; `classic` and `anniversary` rows are
+  kept.
+
+---
+
+## [1.1.12] - 2026-08-27
+
+### Fixed
+
+- **Addon download fails with "Invalid request." and never recovers.**
+  The TSM server now rejects a session roughly 10 minutes after login (measured
+  2026-08-27: still accepted at 9m07s, rejected at 10m07s). The auth refresh job
+  ran every 25 minutes, so the session was dead for about 15 minutes out of every
+  25. `"Invalid request."` is the server's generic rejection, returned as HTTP 200
+  with `{"success": false, "error": ...}`, and nothing in the app recovered from
+  it: every retry reused the same dead session, so the only way out was a
+  restart. Two changes fix this: the auth refresh job now runs every 5 minutes,
+  and a rejected request re-authenticates once and retries, so a session that
+  lapses between refreshes recovers in place.
+- **API errors were silently swallowed on every endpoint except the addon
+  download.** `api_request()` returned the error envelope as if it were data, so a
+  `/v2/status` call with a dead session looked like a successful response with no
+  realms and no addons: the app rewrote its cached `AppData.lua`, logged nothing,
+  and quietly stopped picking up new auction data. The addon download was the one
+  place that checked the envelope, which is why that was the only visible symptom.
+  `api_request()` now raises `TSMApiError` for `{"success": false}` on every
+  endpoint, matching the original Windows client.
+- **The addon download no longer sends a `tsm_version` query parameter.**
+  The original client sends `tsm_version` on `/v2/status` only, where it carries
+  the version of the installed TradeSkillMaster addon. The app was sending the
+  version of the addon it was downloading, which is not what the parameter means.
+- **Each WoW client now receives the package built for it.**
+  The game-version suffix was stripped before the request, so one retail download
+  was installed into `_classic_era_`, `_classic_` and `_anniversary_` as well. The
+  suffixed name (`-Classic`, `-Progression`, `-Anniversary`) is now sent and each
+  package is installed only into its own game version directory.
+
+### Changed
+
+- Auth refresh interval reduced from 25 minutes to 5 minutes
+  (`AUTH_REFRESH_MINUTES` in `tsm/core/scheduler.py`), well inside the server's
+  session lifetime.
+- `TSMApiClient.api_request()` raises the new `TSMApiError` instead of returning
+  the error payload. Callers that treated an error envelope as data now see the
+  failure. `AddonAPI.download()` no longer raises `ValueError` for that case.
+- `AddonAPI.download(name, channel)` no longer accepts a `tsm_version` argument,
+  and `name` is expected to carry its game-version suffix.
+- When several requests are rejected at the same time, only the first
+  re-authenticates; the rest wait for it and retry against the new session.
+
+### Chore
+
+- `docs/api.md` corrected against the live API: session lifetime, the per-session
+  `endpointSubdomains` map (`addon` is served by `app-server4`/`app-server5`,
+  not the `app-server` that serves `status`), the `/v2/addon` contract, the error
+  envelope, and the status response shape (`appVersion` is not actually sent,
+  `version_str` carries a leading `v`, `addons-Classic` / `addons-BCC` exist).
+
+---
+
 ## [1.1.11] - 2026-05-23
 
 ### Fixed

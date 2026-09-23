@@ -78,19 +78,33 @@ Response:
 
 ```json
 {
+  "success": true,
   "session": "<session_token>",
   "userId": 123456,
   "isPremium": true,
   "endpointSubdomains": {
     "status": "app-server",
-    "addon": "app-server",
-    "realms2": "app-server"
+    "addon": "app-server5",
+    "auctiondb": "app-server5",
+    "app": "app-server",
+    "backup": "app-server",
+    "shopping": "app-server",
+    "sv": "legacy-app2"
   }
 }
 ```
 
 The `session` token must be included in all subsequent requests. The
 `endpointSubdomains` map tells the client which subdomain to call for each endpoint.
+
+**This map is assigned per session and is not stable.** Observed live: `status`
+is consistently `app-server`, while `addon` and `auctiondb` come back as
+`app-server4` or `app-server5` depending on the login, and the set of keys varies
+(`sv` is not always present). A subdomain only serves the endpoints it was
+assigned: asking `app-server` for `/v2/addon` is rejected even with a valid
+session. The map must therefore be read from the auth response for every session,
+never cached or hardcoded, and a rejected call is worth retrying after a fresh
+login.
 
 ---
 
@@ -106,6 +120,11 @@ Every API call (except the OIDC step) includes these query parameters:
 | `token`       | string | HMAC token - see below                |
 | `channel`     | string | _(optional)_ `"release"` or `"beta"`  |
 | `tsm_version` | string | _(optional)_ TSM addon version string |
+
+`tsm_version` is the version of the installed **TradeSkillMaster addon**, read
+from its `.toc`, not the version of whatever is being requested. The original
+client sends it on `/v2/status` only (`AppAPI.py:171`); `/v2/addon` is called
+without it (`AppAPI.py:175`).
 
 ### HMAC token computation
 
@@ -148,6 +167,20 @@ The response `Content-Type` determines how the response is parsed:
 Failed requests with HTTP 5xx are retried up to 3 times with exponential back-off
 (2 s, 4 s). HTTP 4xx errors are raised immediately without retry.
 
+### Error envelope
+
+Every JSON response carries a `success` field. A rejection is **HTTP 200** with:
+
+```json
+{ "success": false, "error": "Invalid request." }
+```
+
+`"Invalid request."` is the server's generic rejection string and does not say
+what was wrong. It is returned for an expired or unknown session, for an empty
+session, and for asking a subdomain to serve an endpoint it was not assigned. A
+client that only looks at the HTTP status treats these as successful empty
+responses.
+
 ---
 
 ## Endpoints
@@ -163,8 +196,12 @@ Response structure:
 
 ```json
 {
-  "appVersion": 41402,
-  "addons": [{ "name": "TradeSkillMaster", "version_str": "4.13.5" }],
+  "success": true,
+  "channels": { "release": "Release" },
+  "appInfo": { "news": "Welcome to TSM!", "minTSMUpdateNotificationVersion": 3030600 },
+  "addons": [{ "name": "TradeSkillMaster", "version_str": "v4.14.76" }],
+  "addons-Classic": [{ "name": "TradeSkillMaster-Classic", "version_str": "v4.14.76" }],
+  "addons-BCC": [{ "name": "TradeSkillMaster-BCC", "version_str": "v4.14.76" }],
   "addonMessage": { "id": 0, "msg": "" },
   "realms": [ ... ],
   "regions": [ ... ],
@@ -177,8 +214,34 @@ Response structure:
 }
 ```
 
-All array values are `RealmEntry[]`. See the game version mapping table below for
-which key corresponds to which WoW version.
+All realm array values are `RealmEntry[]`. See the game version mapping table
+below for which key corresponds to which WoW version.
+
+`version_str` values carry a leading `v` (e.g. `v4.14.76`). `appVersion` is
+documented here for completeness but is **not** present in the live response, so
+clients fall back to their own build number. `realms-BCC` / `regions-BCC` are
+returned alongside `realms-Progression` / `regions-Progression` and carry the
+same payload.
+
+**Account-scoped keys vs catalogue keys.** This is the distinction that decides
+whether a client has to filter the list itself:
+
+| Key | Scope | Rows (measured 2026-08-27) |
+| --- | --- | --- |
+| `realms` / `regions` | the account's registered realms | 1 |
+| `realms-Progression` / `regions-Progression` | the account's registered realms | 3 |
+| `extraClassicRealms` / `extraClassicRegions` | full catalogue | 240 / 12 |
+| `extraAnniversaryRealms` / `extraAnniversaryRegions` | full catalogue | 10 / 4 |
+
+Retail and Progression already come back narrowed to the account, so a client
+must not filter them further. The `extra*` keys return every realm in every
+region and do need narrowing to whatever the user chose to add.
+
+Region strings within one catalogue key are not interchangeable prefixes of a
+common region: `extraClassicRealms` carries `Classic-EU`, `HC-EU` and `SoD-EU`
+side by side, and `extraAnniversaryRealms` uses `Fresh-EU` / `Fresh-US` rather
+than an `Anniversary-` prefix. Matching on the trailing two-letter code merges
+game modes that are genuinely separate.
 
 **RealmEntry** (realm or region object):
 
@@ -221,30 +284,53 @@ Display name transform for Progression realms: `BCC-EU` becomes `Progression-EU`
 
 Download an addon zip file.
 
-| Parameter     | Description                          |
-| ------------- | ------------------------------------ |
-| `name`        | Addon name, e.g. `TradeSkillMaster`  |
-| `channel`     | _(optional)_ `"release"` or `"beta"` |
-| `tsm_version` | _(optional)_ Current addon version   |
+| Parameter | Description                                          |
+| --------- | ---------------------------------------------------- |
+| `name`    | Addon name including the game-version suffix         |
+| `channel` | _(optional)_ `"release"` or `"beta"`                 |
 
-Response: `application/zip` - raw bytes of the zip archive.
+`name` carries the same suffix the status response uses for that game version:
+`""` (retail), `-Classic`, `-Progression`, `-Anniversary`. The status response
+also exposes `addons-Classic` and `addons-BCC` lists whose names already include
+a suffix; both `-Progression` and `-BCC` are accepted for the `_classic_` client.
+
+**No `tsm_version` parameter.** The endpoint is called without it in the original
+client. As of 2026-08 the server tolerates one, but sending the version of the
+addon being requested was never correct.
+
+Response: `application/zip` - raw bytes of the zip archive. The endpoint has also
+answered with a JSON `{"url": "..."}` CDN redirect (seen 2026-05), so a client
+must handle both. The zip's top-level folder is the addon name **without** the
+suffix, so all four packages extract to e.g. `TradeSkillMaster_AppHelper/`.
 
 ---
 
 ### `GET /v2/realms2/list`
 
-List all realms registered to the authenticated user's account.
+List the **full catalogue** of realms the API knows about, not the account's own
+realms. Measured 2026-08-27: 558 retail realms across EU/KR/TW/US and 226 bcc
+realms. This is the source for the Add Realm dropdown.
 
 Response:
 
 ```json
 {
+  "success": true,
   "retail": [ ... ],
   "bcc": [ ... ]
 }
 ```
 
-Both arrays contain `RealmEntry[]`.
+Both arrays contain `RealmEntry[]`, but with a **bare** region and an integer id:
+
+```json
+{ "id": 1, "masterId": 1, "name": "Anathema-Alliance", "region": "US" }
+```
+
+Note the region differs from what `/v2/status` reports for the same realm. A bcc
+realm listed here as `region: "EU"` appears in `realms-Progression` as
+`region: "BCC-EU"` with a string id such as `"106-BCC"`. Do not use a region
+string from this endpoint as a key against status data.
 
 ---
 
@@ -351,6 +437,9 @@ The original app runs these jobs on a timer:
 | ------------------ | ---------------- | ----------------------------------------- |
 | Auction data sync  | Every 60 minutes | Full status + download cycle              |
 | Auth token refresh | Every 25 minutes | Re-exchanges OIDC token to extend session |
+
+The Linux port refreshes auth every 5 minutes instead, because the session no
+longer lives 25 minutes. See the note below.
 | WoW install scan   | Every 5 minutes  | Detects new/removed WoW installs          |
 | Addon update check | Every 6 hours    | Checks `addons` list from status response |
 
@@ -362,8 +451,12 @@ The original app runs these jobs on a timer:
   uses HTTPS.
 - **Shared HMAC secret.** The secret `3FB1CC5EDC5B43F21CB8ACC23B42B703` is
   hardcoded in the distributed app binary and is the same for all users.
-- **Session tokens are short-lived.** The auth refresh job runs every 25 minutes,
-  suggesting session tokens expire around 30 minutes.
+- **Session tokens last about 10 minutes.** Measured 2026-08-27 by polling a
+  single session: `/v2/status` and `/v2/addon` both answered normally at 9m07s
+  after login and both returned `{"success": false, "error": "Invalid request."}`
+  at 10m07s. The original app's 25 minute refresh interval is no longer short
+  enough, and a rejected session never recovers on its own: the same token keeps
+  being sent until the client logs in again.
 - **CDN URLs require no authentication.** The blob download URLs returned by the
   status endpoint are public CDN URLs and can be fetched without any credentials.
 - **AppHelper detection is required.** If `TSM_AppHelper/AppData.lua` is not found
@@ -378,3 +471,7 @@ The original app runs these jobs on a timer:
   intermediate proxy.
 - **`realms2` and `auth` always use `app-server`.** These endpoints are not
   remapped by `endpointSubdomains`; the subdomain is hardcoded in the client.
+- **`endpointSubdomains` is per session.** `addon` and `auctiondb` are handed out
+  as `app-server4` or `app-server5` and can differ between two logins seconds
+  apart. A long-running client that holds one session keeps whatever mapping it
+  was given, so a rejected call needs a fresh login rather than a plain retry.

@@ -49,6 +49,21 @@ _REALM_CONFIGS = [
 ]
 
 
+# Game versions whose realms are registered against the account. /v2/status
+# returns only the registered ones for these, and the full catalogue for the rest.
+_API_REGISTERED_GV = ("retail", "bcc")
+
+
+def _bare_region(region: str) -> str:
+    """Strip a game-version prefix from a region for the realms2 API only.
+
+    The API wants the bare code: "BCC-EU" is rejected, "EU" removes the realm
+    (verified against the live endpoint 2026-08-27). Never apply this to a
+    user_added_realms key, where Classic-EU, HC-EU and SoD-EU are distinct.
+    """
+    return region.rsplit("-", 1)[-1]
+
+
 class AuctionDataService:
     def __init__(
         self,
@@ -97,15 +112,19 @@ class AuctionDataService:
             if not app_data:
                 continue  # AppHelper not installed for this game version, skip
 
-            # Classic Era, Anniversary, SoD: the API returns all 250+ available
-            # realms. Only sync game versions where the user explicitly added a
-            # realm via the Add Realm dropdown.
+            # /v2/status returns the account's own registered realms for retail
+            # and bcc, but the full catalogue (240+ realms across every region)
+            # for Classic Era and Anniversary. Only those two need narrowing to
+            # what the user added via the Add Realm dropdown.
+            #
+            # bcc was filtered here too, which skipped every Progression realm:
+            # status keys them "BCC-EU" while the dropdown stored the bare "EU"
+            # from realms2/list, so nothing ever matched. See issue #19.
             realm_filter: set[tuple[str, str]] | None = None
-            if gv_dir in ("_classic_era_", "_anniversary_", "_classic_"):
+            if gv_dir in ("_classic_era_", "_anniversary_"):
                 _GV_TO_API_KEY = {
                     "_anniversary_": "anniversary",
                     "_classic_era_": "classic",
-                    "_classic_": "bcc",
                 }
                 api_gv_key = _GV_TO_API_KEY[gv_dir]
                 realm_filter = (
@@ -116,11 +135,14 @@ class AuctionDataService:
                     continue
 
             # Process realms, dynamic key access requires cast (key is a runtime variable)
-            for realm in cast(list[RealmEntry], result.get(realms_key, [])):
+            api_realms = cast(list[RealmEntry], result.get(realms_key, []))
+            skipped: list[str] = []
+            for realm in api_realms:
                 name = realm.get("name", "")
                 region = realm.get("region", "")
 
                 if realm_filter is not None and (region, name) not in realm_filter:
+                    skipped.append(f"{region}-{name}" if region else name)
                     continue
 
                 strings = realm.get("appDataStrings", {})
@@ -150,6 +172,19 @@ class AuctionDataService:
                     # value so the column matches what is stored in AppData.lua.
                     if _REALM_LAST_UPDATED_TAG in pending:
                         rs.last_updated = pending[_REALM_LAST_UPDATED_TAG]["lastModified"]
+
+            if skipped:
+                # Counts at INFO, names at DEBUG: for the catalogue game versions
+                # "skipped" is most of 240 realms on every five minute sync, so the
+                # names are noise. The count still shows the filter is doing
+                # something, which is what would have exposed issue #19 early.
+                logger.info(
+                    "%s: %d of %d realms not in the added-realm list",
+                    gv_dir,
+                    len(skipped),
+                    len(api_realms),
+                )
+                logger.debug("%s: skipped %s", gv_dir, ", ".join(skipped))
 
             # Process regions, dynamic key access requires cast (key is a runtime variable)
             region_filter = {r[0] for r in realm_filter} if realm_filter is not None else None
@@ -252,19 +287,37 @@ class AuctionDataService:
         return result
 
     async def remove_realm(self, game_version: str, region: str, name: str) -> None:
-        if self._client is None:
-            return
-        await self._client.realms.remove(game_version, region, name)
-        if game_version in ("anniversary", "classic", "bcc") and self._cache:
+        """Deregister a realm, or drop it from the local filter.
+
+        Only retail and bcc are registered server side: /v2/status returns the
+        account's own realms for those. Classic Era and Anniversary come back as
+        the full catalogue, so user_added_realms is the only thing deciding what
+        syncs and deleting the row is the whole job. Calling realms2/remove for
+        them fails with "Invalid request." and achieves nothing. See issue #19.
+        """
+        if game_version in _API_REGISTERED_GV:
+            if self._client is None:
+                return
+            await self._client.realms.remove(game_version, _bare_region(region), name)
+        elif self._cache is not None:
             await self._cache.remove_user_realm(game_version, region, name)
 
     async def add_realm(
         self, game_version: str, realm_id: int, region: str = "", name: str = ""
     ) -> None:
-        if self._client is None:
-            return
-        await self._client.realms.add(game_version, realm_id)
-        if game_version in ("anniversary", "classic", "bcc") and self._cache and region and name:
+        """Register a realm, or add it to the local filter.
+
+        Mirrors remove_realm: only retail and bcc exist server side. realms2/add
+        answers "Internal error. Contact support." for Classic Era and
+        Anniversary, and registering them would change nothing anyway, since
+        /v2/status returns their full catalogue. Writing the local row is what
+        actually makes them sync. See issue #19.
+        """
+        if game_version in _API_REGISTERED_GV:
+            if self._client is None:
+                return
+            await self._client.realms.add(game_version, realm_id)
+        elif self._cache is not None and region and name:
             await self._cache.add_user_realm(game_version, region, name)
 
     async def get_snapshot(self) -> tuple[list[RealmStatus], int]:

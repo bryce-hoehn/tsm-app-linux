@@ -13,6 +13,7 @@ _TIME_COLS = ["time", "timestamp", "ts"]
 _PRICE_COLS = ["price", "money", "amount"]
 _QTY_COLS = ["quantity", "qty", "count"]
 _ITEM_COLS = ["itemstring", "item", "itemid"]
+_PLAYER_COLS = ["player"]
 
 # Sign multiplier for copper totals; 0 = excluded from financial summary
 _GOLD_SIGN = {
@@ -51,6 +52,7 @@ def _to_unified_rows(
     p_idx = _find_col(hl, _PRICE_COLS)
     q_idx = _find_col(hl, _QTY_COLS)
     i_idx = _find_col(hl, _ITEM_COLS)
+    pl_idx = _find_col(hl, _PLAYER_COLS)
     sign = _GOLD_SIGN.get(label, 0)
 
     result = []
@@ -61,11 +63,19 @@ def _to_unified_rows(
             qty = int(row[q_idx]) if 0 <= q_idx < len(row) else 1
             item = row[i_idx] if 0 <= i_idx < len(row) else (row[0] if row else "?")
             item = item.strip().rstrip(":")
+            player = row[pl_idx].strip() if 0 <= pl_idx < len(row) else ""
             copper = price * qty * sign
         except (ValueError, IndexError):
             continue
         result.append(
-            {"label": label, "item": item, "qty": qty, "copper": copper, "timestamp": ts}
+            {
+                "label": label,
+                "item": item,
+                "qty": qty,
+                "copper": copper,
+                "timestamp": ts,
+                "player": player,
+            }
         )
     return result
 

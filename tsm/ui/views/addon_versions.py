@@ -8,8 +8,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QEasingCurve,
-    QPropertyAnimation,
     QRectF,
     QSize,
     Qt,
@@ -24,15 +22,15 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QScrollArea,
-    QSizePolicy,
     QTableWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from tsm.api.types import AddonVersionInfo
+from tsm.ui.components.collapsible_group import CollapsibleGroup
 from tsm.ui.components.hover_button import HoverIconButton
-from tsm.ui.views._utils import set_table_cell
+from tsm.ui.views._utils import set_table_cell, table_content_height
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +52,6 @@ _SUFFIX_LABEL = {
 
 # Fallback list if the API has not returned addon info yet
 _DEFAULT_ADDONS = ["TradeSkillMaster", "TSM_AppHelper"]
-
-_ANIM_MS = 180  # collapse/expand animation duration (ms)
 
 # Module-level icon constants - avoid per-row file I/O
 _DL_ICON = QIcon(str(_ASSETS / "download.svg"))
@@ -141,91 +137,18 @@ def _make_status_cell(status: str, color: str) -> QWidget:
     return w
 
 
-class _GroupHeader(QWidget):
-    """Clickable group header with arrow, group name, and installed summary."""
-
-    clicked: Signal = Signal()
-
-    def __init__(self, label: str, parent=None):
-        super().__init__(parent)
-        self._label = label
-        self.setObjectName("addon-group-header")
-        self.setFixedHeight(32)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 0, 10, 0)
-        layout.setSpacing(6)
-
-        self._arrow = QLabel("▶")
-        self._arrow.setObjectName("addon-group-arrow")
-        self._arrow.setFixedWidth(12)
-        layout.addWidget(self._arrow)
-
-        name_lbl = QLabel(label)
-        name_lbl.setObjectName("addon-group-name")
-        layout.addWidget(name_lbl)
-
-        self._wow_lbl = QLabel("")
-        self._wow_lbl.setObjectName("addon-group-wow")
-        layout.addWidget(self._wow_lbl)
-
-        layout.addStretch()
-
-        self._summary = QLabel("")
-        self._summary.setObjectName("addon-group-summary")
-        layout.addWidget(self._summary)
-
-    def set_expanded(self, expanded: bool) -> None:
-        self._arrow.setText("▼" if expanded else "▶")
-
-    def set_summary(self, text: str) -> None:
-        self._summary.setText(text)
-
-    def set_wow_installed(self, installed: bool | None) -> None:
-        """Show WoW installation status. None hides the label (state unknown)."""
-        if installed is None:
-            self._wow_lbl.setText("")
-        elif installed:
-            self._wow_lbl.setText("Installed")
-        else:
-            self._wow_lbl.setText("Not installed")
-
-    def mousePressEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
-        super().mousePressEvent(event)
-
-
 class _AddonGroupWidget(QWidget):
     """Collapsible group for one game-version suffix (Retail, Classic, etc.)."""
 
     def __init__(self, suffix: str, parent=None):
         super().__init__(parent)
         self._suffix = suffix
-        self._expanded = False
-        self._initialized = False
-        self._natural_height = 0
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._setup_ui()
 
     def _setup_ui(self) -> None:
         vbox = QVBoxLayout(self)
         vbox.setContentsMargins(0, 0, 0, 0)
         vbox.setSpacing(0)
-
-        label = _SUFFIX_LABEL.get(self._suffix, self._suffix.lstrip("-"))
-        self._header = _GroupHeader(label)
-        self._header.clicked.connect(self._toggle)
-        vbox.addWidget(self._header)
-
-        # Collapsible body
-        self._body = QWidget()
-        self._body.setMaximumHeight(0)
-        body_vbox = QVBoxLayout(self._body)
-        body_vbox.setContentsMargins(0, 0, 0, 0)
-        body_vbox.setSpacing(0)
 
         self._table = QTableWidget(0, 5)
         self._table.setHorizontalHeaderLabels(["Name", "Latest", "Installed", "Status", ""])
@@ -247,34 +170,9 @@ class _AddonGroupWidget(QWidget):
         self._table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        body_vbox.addWidget(self._table)
-        vbox.addWidget(self._body)
-
-        self._anim = QPropertyAnimation(self._body, b"maximumHeight")
-        self._anim.setDuration(_ANIM_MS)
-        self._anim.setEasingCurve(QEasingCurve.Type.InOutQuad)
-        self._anim.finished.connect(self._on_anim_finished)
-
-    # ── Toggle ────────────────────────────────────────────────────────
-
-    def _toggle(self) -> None:
-        if self._expanded:
-            self._anim.stop()
-            self._anim.setStartValue(self._body.height())
-            self._anim.setEndValue(0)
-            self._expanded = False
-        else:
-            self._anim.stop()
-            self._anim.setStartValue(self._body.maximumHeight())
-            self._anim.setEndValue(self._natural_height)
-            self._expanded = True
-        self._header.set_expanded(self._expanded)
-        self._anim.start()
-
-    def _on_anim_finished(self) -> None:
-        if self._expanded:
-            # Remove constraint so table can grow if rows are added later
-            self._body.setMaximumHeight(16777215)
+        label = _SUFFIX_LABEL.get(self._suffix, self._suffix.lstrip("-"))
+        self._group = CollapsibleGroup(label, self._table)
+        vbox.addWidget(self._group)
 
     # ── Data update ───────────────────────────────────────────────────
 
@@ -330,12 +228,8 @@ class _AddonGroupWidget(QWidget):
                 self._table.setCellWidget(row, 4, btn)
 
         # Compute and lock table height to its exact content size
-        hdr_h = self._table.horizontalHeader().sizeHint().height()
-        if hdr_h < 1:
-            hdr_h = 28
-        row_h = self._table.verticalHeader().defaultSectionSize()
-        self._natural_height = hdr_h + len(addons) * row_h
-        self._table.setFixedHeight(self._natural_height)
+        height = table_content_height(self._table, len(addons))
+        self._table.setFixedHeight(height)
 
         # Update header summary
         if installed_count == 0:
@@ -344,23 +238,15 @@ class _AddonGroupWidget(QWidget):
             summary = "1 installed"
         else:
             summary = f"{installed_count} installed"
-        self._header.set_summary(summary)
+        self._group.set_summary(summary)
 
-        # Set initial expand/collapse on first call
-        if not self._initialized:
-            self._initialized = True
-            if installed_count > 0:
-                self._expanded = True
-                self._header.set_expanded(True)
-                self._body.setMaximumHeight(16777215)
-            # else: stays collapsed (maximumHeight == 0)
-        elif self._expanded:
-            # Already expanded - keep the height constraint removed
-            self._body.setMaximumHeight(16777215)
+        # Expand on the first fill only when something is installed
+        self._group.set_content_height(height, expand_if_content=installed_count > 0)
 
     def set_wow_installed(self, installed: bool | None) -> None:
-        """Delegate WoW installation status to the group header."""
-        self._header.set_wow_installed(installed)
+        """Show WoW installation status. None hides the label (state unknown)."""
+        labels: dict[bool | None, str] = {None: "", True: "Installed", False: "Not installed"}
+        self._group.set_side_label(labels[installed])
 
 
 class AddonVersionsView(QWidget):

@@ -281,6 +281,32 @@ QWidget#accounting-summary {
     border-radius: 4px;
 }
 
+/* ── Accounting dashboard ─────────────────────────────────────────── */
+QFrame#accounting-card {
+    background-color: #1a1a1a;
+    border: 1px solid #2e2e2e;
+    border-radius: 4px;
+}
+QFrame#accounting-card QLabel {
+    background: transparent;
+}
+QPushButton#range-button {
+    background-color: transparent;
+    color: #8a8a8a;
+    border: none;
+    border-radius: 3px;
+    font-weight: normal;
+    padding: 0;
+}
+QPushButton#range-button:hover {
+    background-color: #2e2e2e;
+    color: #d0d0d0;
+}
+QPushButton#range-button:checked {
+    background-color: #f26522;
+    color: #ffffff;
+}
+
 /* ── CheckBox ─────────────────────────────────────────────────────── */
 QCheckBox {
     spacing: 6px;
