@@ -38,11 +38,11 @@ python3Packages.buildPythonApplication {
     pkgs.libsecret
     pkgs.qt6.qtwayland
     # X11 libraries
-    pkgs.xorg.libxcb
-    pkgs.xorg.xcbutilwm
-    pkgs.xorg.xcbutilimage
-    pkgs.xorg.xcbutilkeysyms
-    pkgs.xorg.xcbutilrenderutil
+    pkgs.libxcb
+    pkgs.libxcb-wm
+    pkgs.libxcb-image
+    pkgs.libxcb-keysyms
+    pkgs.libxcb-render-util
     pkgs.xcb-util-cursor
   ];
 
