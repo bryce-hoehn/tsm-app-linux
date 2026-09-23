@@ -42,11 +42,9 @@
           ];
           pythonImportsCheck = [ "apscheduler" ];
         };
-
         tsm-app = pkgs.callPackage ./package.nix {
+          inherit pkgs;
           python3Packages = python.pkgs;
-          wrapQtAppsHook = pkgs.qt6.wrapQtAppsHook;
-          inherit (pkgs.qt6) qtwayland qtsvg;
           src = self;
           version = tsmVersion;
           apscheduler = apscheduler4;
