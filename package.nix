@@ -1,12 +1,7 @@
 {
   lib,
+  pkgs,
   python3Packages,
-  wrapQtAppsHook,
-  libsecret,
-  qtwayland,
-  qtsvg,
-
-  # provided by the flake
   src,
   version,
   apscheduler,
@@ -22,7 +17,6 @@ python3Packages.buildPythonApplication {
     hatch-vcs
   ];
 
-  # metadata for hatch-vcs to derive the version from
   env.HATCH_VCS_PRETEND_VERSION = version;
 
   dependencies = with python3Packages; [
@@ -38,19 +32,24 @@ python3Packages.buildPythonApplication {
     typing-extensions
   ];
 
-  nativeBuildInputs = [ wrapQtAppsHook ];
+  nativeBuildInputs = [ pkgs.qt6.wrapQtAppsHook ];
 
   buildInputs = [
-    libsecret
-    qtwayland
+    pkgs.libsecret
+    pkgs.qt6.qtwayland
+    # X11 libraries
+    pkgs.xorg.libxcb
+    pkgs.xorg.xcbutilwm
+    pkgs.xorg.xcbutilimage
+    pkgs.xorg.xcbutilkeysyms
+    pkgs.xorg.xcbutilrenderutil
+    pkgs.xcb-util-cursor
   ];
 
-  # Qt SVG rendering for the tray icon and UI graphics
-  propagatedBuildInputs = [ qtsvg ];
+  propagatedBuildInputs = [ pkgs.qt6.qtsvg ];
 
   pythonImportsCheck = [ "tsm" ];
 
-  # Desktop entry + hicolor icons, mirroring packaging/PKGBUILD
   postInstall = ''
     install -Dm644 $src/packaging/tsm-app.desktop \
       $out/share/applications/tsm-app.desktop
